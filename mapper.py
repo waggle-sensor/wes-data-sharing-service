@@ -8,8 +8,10 @@ from waggle.protocol import pack_sensorgram, pack_datagram, unpack_datagram, unp
 # Should *really* rethink if we want to split id / version at protocol level instead of just name.
 plugin_table = [
     {'name': 'simple:0.1.0', 'waggle_id': 1, 'waggle_version': (0, 1, 0)},
+    {'name': 'simple:0.2.0', 'waggle_id': 1, 'waggle_version': (0, 2, 0)},
+    {'name': 'simple:0.2.1', 'waggle_id': 1, 'waggle_version': (0, 2, 1)},
     {'name': 'carped:0.1.0', 'waggle_id': 2, 'waggle_version': (0, 1, 0)},
-    {'name': 'carped:0.2.0', 'waggle_id': 1, 'waggle_version': (0, 2, 0)},
+    {'name': 'carped:0.2.0', 'waggle_id': 2, 'waggle_version': (0, 2, 0)},
 ]
 
 plugin_by_name = {r['name']: r for r in plugin_table}
@@ -19,8 +21,8 @@ plugin_by_waggle_id_version = {(r['waggle_id'], r['waggle_version']): r for r in
 # standard list of sensors.
 sensor_table = [
     {'topic': 'env/temperature/tmp112', 'unit': 'C', 'waggle_id': 0x0001, 'waggle_sub_id': 1},
-    {'topic': 'env/temperature/ht21d', 'unit': 'C', 'waggle_id': 0x0002, 'waggle_sub_id': 1},
-    {'topic': 'env/humidity/ht21d', 'unit': '%RH', 'waggle_id': 0x0002, 'waggle_sub_id': 2},
+    {'topic': 'env/temperature/htu21d', 'unit': 'C', 'waggle_id': 0x0002, 'waggle_sub_id': 1},
+    {'topic': 'env/humidity/htu21d', 'unit': '%RH', 'waggle_id': 0x0002, 'waggle_sub_id': 2},
     {'topic': 'env/humidity/hih4030', 'unit': '%RH', 'waggle_id': 0x0003, 'waggle_sub_id': 1},
 ]
 
