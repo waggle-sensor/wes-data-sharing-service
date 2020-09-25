@@ -31,10 +31,15 @@ sensor_table = [
 sensor_by_topic = {r['topic']: r for r in sensor_table}
 sensor_by_id_sub_id = {(r['waggle_id'], r['waggle_sub_id']): r for r in sensor_table}
 
+def validate_type(v, t):
+    if not isinstance(v, t):
+        raise TypeError(f'Value type {type(v)} does not match schema type {t}.')
+
 # transform intra-node format to waggle protocol
 def local_to_waggle(msg):
     sensor = sensor_by_topic[msg['topic']]
     plugin = plugin_by_name[msg['plugin']]
+    validate_type(msg['value'], sensor['type'])
     return pack_datagram({
         'plugin_id': plugin['waggle_id'],
         'plugin_major_version': plugin['waggle_version'][0],
@@ -57,6 +62,7 @@ def waggle_to_local(data):
     plugin_id = d['plugin_id']
     plugin_version = (d['plugin_major_version'], d['plugin_minor_version'], d['plugin_patch_version'])
     plugin = plugin_by_waggle_id_version[(plugin_id, plugin_version)]
+    validate_type(s['value'], sensor['type'])
     return {
         'ts': int(s['timestamp'] * 1e9),
         'value': s['value'],
