@@ -20,10 +20,12 @@ plugin_by_waggle_id_version = {(r['waggle_id'], r['waggle_version']): r for r in
 # NOTE This can *possibly* be generated automatically by ECR, but it may be better to curate a
 # standard list of sensors.
 sensor_table = [
-    {'topic': 'env/temperature/tmp112', 'unit': 'C', 'waggle_id': 0x0001, 'waggle_sub_id': 1},
-    {'topic': 'env/temperature/htu21d', 'unit': 'C', 'waggle_id': 0x0002, 'waggle_sub_id': 1},
-    {'topic': 'env/humidity/htu21d', 'unit': '%RH', 'waggle_id': 0x0002, 'waggle_sub_id': 2},
-    {'topic': 'env/humidity/hih4030', 'unit': '%RH', 'waggle_id': 0x0003, 'waggle_sub_id': 1},
+    {'topic': 'raw/tmp112', 'waggle_id': 0x0001, 'waggle_sub_id': 0, 'unit': '', 'type': bytes},
+    {'topic': 'env/temperature/tmp112', 'waggle_id': 0x0001, 'waggle_sub_id': 1, 'unit': 'C', 'type': float},
+    {'topic': 'raw/htu21d', 'waggle_id': 0x0002, 'waggle_sub_id': 0, 'unit': 'C', 'type': bytes},
+    {'topic': 'env/temperature/htu21d', 'waggle_id': 0x0002, 'waggle_sub_id': 1, 'unit': 'C', 'type': float},
+    {'topic': 'env/humidity/htu21d', 'waggle_id': 0x0002, 'waggle_sub_id': 2, 'unit': '%RH', 'type': float},
+    {'topic': 'env/humidity/hih4030', 'waggle_id': 0x0003, 'waggle_sub_id': 1, 'unit': '%RH', 'type': float},
 ]
 
 sensor_by_topic = {r['topic']: r for r in sensor_table}
