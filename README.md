@@ -22,10 +22,8 @@ The data sharing service is what makes data available both to plugins on the nod
 
 The current intra-node message format is a JSON structure with fields:
 
-* `ts`. Message timestamp (nanoseconds since epoch).
-* `value`. Message value
-            'ts': 0,
-            'value': 22.9,
-            'plugin': 'simple:0.1.0',
-            'topic': 'env.temperature.tmp112',
-        }
+* `ts`. Message timestamp in nanoseconds since epoch. 
+* `value`. Message value.
+* `topic`. Ontology name of message.
+* `plugin`. Plugin which created message
+* `scope`. Subset of `["node", "beehive"]` used to route message.
