@@ -6,26 +6,40 @@ import msgpack
 import json
 import zlib
 
+
+included_fields = ['ts', 'topic', 'value', 'plugin']
+
+
 def on_validator_callback(ch, method, properties, body):
-    # The message is valid if it can be mapped to a waggle protocol message.
-    # This ensures that the same kinds of messages are available everywhere.
+    # Decode intra-node message.
     try:
-        local_msg = json.loads(body)
-        waggle_body = mapper.local_to_waggle(local_msg)
-    except Exception as exc:
-        print('invalid msg', body, exc)
+        msg = json.loads(body)
+    except json.JSONDecodeError:
         ch.basic_ack(method.delivery_tag)
+        print('invalid message', body)
+        return
+    
+    scope = msg.get('scope', ['node', 'beehive'])
+    
+    # Repack JSON only included fields and to ensure in compact format.
+    msg = {k: msg[k] for k in included_fields}
+    node_body = json.dumps(msg, separators=(',', ':')).encode()
+
+    # The message is valid if it can be mapped to waggle protocol message.
+    try:
+        beehive_body = mapper.local_to_waggle(msg)
+    except Exception:
+        ch.basic_ack(method.delivery_tag)
+        print('could not serialize message', msg)
         return
 
-    ch.basic_publish('data.topic', local_msg['topic'], body)
-    ch.basic_publish('to-beehive', method.routing_key, waggle_body)
-    ch.basic_ack(method.delivery_tag)
-    print('send to local', len(body), len(zlib.compress(body)), body)
+    # Fanout based on scope.
+    if 'node' in scope:
+        ch.basic_publish('data.topic', msg['topic'], node_body)
+    if 'beehive' in scope:
+        ch.basic_publish('to-beehive', msg['topic'], beehive_body)
 
-
-def on_beehive_callback(ch, method, properties, body):
     ch.basic_ack(method.delivery_tag)
-    print('send to behive', len(body), body)
 
 
 def declare_exchange_with_queue(ch: pika.adapters.blocking_connection.BlockingChannel, name: str):
@@ -39,13 +53,9 @@ def main():
         credentials=pika.PlainCredentials('worker', 'worker'),
     ))
     channel = connection.channel()
-
     declare_exchange_with_queue(channel, 'to-validator')
     declare_exchange_with_queue(channel, 'to-beehive')
-
     channel.basic_consume('to-validator', on_validator_callback)
-    channel.basic_consume('to-beehive', on_beehive_callback)
-
     channel.start_consuming()
 
 
