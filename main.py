@@ -19,7 +19,7 @@ def on_validator_callback(ch, method, properties, body):
     
     scope = msg.get('scope', ['node', 'beehive'])
     
-    # Repack JSON only included fields and to ensure in compact format.
+    # Repack JSON with only included_fields and to ensure in compact format.
     msg = {k: msg[k] for k in included_fields}
     node_body = json.dumps(msg, separators=(',', ':')).encode()
 
