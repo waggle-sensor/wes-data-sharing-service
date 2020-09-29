@@ -9,5 +9,5 @@ The data sharing service is what makes data available both to plugins on the nod
 │┌─────────┐       ┌──────────┐  Scope Fork   ┌───────────┐
 └│┌─────────┐ ───> │ Validate │ ──────┬─────> │ Serialize │ ───> To Beehive
  └│ Plugins │      │ Message  │       v       │ to Waggle │
-  └─────────┘      └──────────┘  To Pluguins  └───────────┘
+  └─────────┘      └──────────┘   To Plugins  └───────────┘
 ```
