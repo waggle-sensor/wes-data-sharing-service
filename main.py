@@ -2,9 +2,7 @@ import time
 import random
 import mapper
 import pika
-import msgpack
 import json
-import zlib
 
 
 included_fields = ['ts', 'topic', 'value', 'plugin']
