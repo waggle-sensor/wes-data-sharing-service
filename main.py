@@ -17,7 +17,7 @@ def on_validator_callback(ch, method, properties, body):
         msg = json.loads(body)
     except json.JSONDecodeError:
         ch.basic_ack(method.delivery_tag)
-        logging.warning('invalid message %s', body)
+        logging.warning('message has bad format %s', body)
         return
     
     scope = msg.get('scope', ['node', 'beehive'])
@@ -27,7 +27,7 @@ def on_validator_callback(ch, method, properties, body):
         msg = {k: msg[k] for k in included_fields}
     except KeyError:
         ch.basic_ack(method.delivery_tag)
-        logging.exception('message missing expected key')
+        logging.exception('message missing expected key %s', msg)
         return
 
     node_body = json.dumps(msg, separators=(',', ':')).encode()
@@ -37,7 +37,7 @@ def on_validator_callback(ch, method, properties, body):
         beehive_body = mapper.local_to_waggle(msg)
     except Exception:
         ch.basic_ack(method.delivery_tag)
-        logging.exception('could not serialize message')
+        logging.exception('message could not be serialized %s', msg)
         return
 
     # Fanout based on scope.
@@ -47,8 +47,9 @@ def on_validator_callback(ch, method, properties, body):
     if 'beehive' in scope:
         ch.basic_publish('to-beehive', msg['topic'], beehive_body)
         logging.debug('beehive <- %s', node_body)
-
+    
     ch.basic_ack(method.delivery_tag)
+    logging.info('processed message')
 
 
 def declare_exchange_with_queue(ch: pika.adapters.blocking_connection.BlockingChannel, name: str):
