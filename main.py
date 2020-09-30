@@ -1,3 +1,4 @@
+import argparse
 import time
 import random
 import mapper
@@ -48,14 +49,11 @@ def declare_exchange_with_queue(ch: pika.adapters.blocking_connection.BlockingCh
 
 
 def main():
-    connection_parameters = pika.ConnectionParameters(
-        host=os.environ.get('RABBITMQ_HOST', 'localhost'),
-        port=int(os.environ.get('RABBITMQ_PORT', 5672)),
-        credentials=pika.PlainCredentials(
-            os.environ.get('RABBITMQ_USERNAME', 'guest'),
-            os.environ.get('RABBITMQ_PASSWORD', 'guest'),
-        ),
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument('url', help='rabbitmq connction url')
+    args = parser.parse_args()
+
+    connection_parameters = pika.URLParameters(args.url)
     connection = pika.BlockingConnection(connection_parameters)
     channel = connection.channel()
     declare_exchange_with_queue(channel, 'to-validator')
