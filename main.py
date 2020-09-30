@@ -63,12 +63,11 @@ def main():
     parser.add_argument('url', help='rabbitmq server url')
     args = parser.parse_args()
 
-    if args.verbose:
-        logging.basicConfig(level=logging.DEBUG)
-        logging.getLogger('pika').setLevel(logging.WARNING)
-    else:
-        logging.basicConfig(level=logging.INFO)
-        logging.getLogger('pika').setLevel(logging.WARNING)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format='%(asctime)s %(message)s',
+        datefmt='%Y/%m/%d %H:%M:%S')
+    logging.getLogger('pika').setLevel(logging.CRITICAL)
 
     logging.info('connecting to rabbitmq server at %s.', args.url)
     connection_parameters = pika.URLParameters(args.url)
