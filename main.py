@@ -3,6 +3,7 @@ import random
 import mapper
 import pika
 import json
+import os
 
 
 included_fields = ['ts', 'topic', 'value', 'plugin']
@@ -47,9 +48,15 @@ def declare_exchange_with_queue(ch: pika.adapters.blocking_connection.BlockingCh
 
 
 def main():
-    connection = pika.BlockingConnection(pika.ConnectionParameters(
-        credentials=pika.PlainCredentials('worker', 'worker'),
-    ))
+    connection_parameters = pika.ConnectionParameters(
+        host=os.environ.get('RABBITMQ_HOST', 'localhost'),
+        port=int(os.environ.get('RABBITMQ_PORT', 5672)),
+        credentials=pika.PlainCredentials(
+            os.environ.get('RABBITMQ_USERNAME', 'guest'),
+            os.environ.get('RABBITMQ_PASSWORD', 'guest'),
+        ),
+    )
+    connection = pika.BlockingConnection(connection_parameters)
     channel = connection.channel()
     declare_exchange_with_queue(channel, 'to-validator')
     declare_exchange_with_queue(channel, 'to-beehive')
