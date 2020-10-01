@@ -14,8 +14,9 @@ The data sharing service is what makes data available both to plugins on the nod
   └─────────┘      └──────────┘   To Plugins  └───────────┘
 ```
 
-* The "validate message" stage checks to see if messages exist in the ontology and if they have the expcted value type.
-
+* The "validate message" stage checks to see if the message is a valid intra-node message. Technical note: We _do not_ check if the name exists in the ontology here. Two very interesting use cases were pointed out:
+  * If I am in early development, I probably want to start trying out data sharing without being blocked by having to predefine everything.
+  * If I am building a set of closely related apps, I may want local only messages which don't need to be in the ontology.
 * The "serialize to waggle" stage takes the intra-node message format and uses the ontology / SDF / PDF to serialize it to a waggle protocol message.
 
 ## Message Format
