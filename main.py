@@ -8,45 +8,46 @@ import os
 import logging
 
 
-included_fields = ['ts', 'name', 'value', 'plugin']
-
-
 def on_validator_callback(ch, method, properties, body):
-    # Decode intra-node message.
     try:
         msg = json.loads(body)
     except json.JSONDecodeError:
-        ch.basic_ack(method.delivery_tag)
         logging.warning('message has bad format %s', body)
         return
-    
+
     scope = msg.get('scope', ['node', 'beehive'])
-    
-    # Repack JSON with only included_fields and to ensure in compact format.
+
     try:
-        msg = {k: msg[k] for k in included_fields}
+        msg = extract_items(msg, ['ts', 'name', 'value', 'plugin'])
     except KeyError:
-        ch.basic_ack(method.delivery_tag)
-        logging.exception('message missing expected key %s', msg)
+        logging.warning('message missing expected keys %s', msg)
         return
 
-    # Forward data to local subscribers, if needed.
     if 'node' in scope:
-        node_body = json.dumps(msg, separators=(',', ':')).encode()
-        ch.basic_publish('data.topic', msg['name'], node_body)
-        logging.debug('node <- %s', node_body)
-
-    # Forward data to beehive, if needed.
+        publish_to_node(ch, msg)
     if 'beehive' in scope:
-        try:
-            beehive_body = mapper.local_to_waggle(msg)
-            ch.basic_publish('to-beehive', msg['name'], beehive_body)
-            logging.debug('beehive <- %s', beehive_body)
-        except Exception:
-            logging.exception('message could not be serialized %s', msg)
-    
-    ch.basic_ack(method.delivery_tag)
+        publish_to_beehive(ch, msg)
     logging.info('processed message')
+
+
+def extract_items(d, ks):
+    return {k: d[k] for k in ks}
+
+
+def publish_to_node(ch, msg):
+    body = json.dumps(msg, separators=(',', ':')).encode()
+    ch.basic_publish('data.topic', msg['name'], body)
+    logging.debug('node <- %s', body)
+
+
+def publish_to_beehive(ch, msg):
+    try:
+        body = mapper.local_to_waggle(msg)
+    except Exception:
+        logging.warning('message could not be serialized %s', msg)
+        return
+    ch.basic_publish('to-beehive', msg['name'], body)
+    logging.debug('beehive <- %s', body)
 
 
 def declare_exchange_with_queue(ch: pika.adapters.blocking_connection.BlockingChannel, name: str):
@@ -77,7 +78,7 @@ def main():
     declare_exchange_with_queue(channel, 'to-beehive')
     
     logging.info('starting main process.')
-    channel.basic_consume('to-validator', on_validator_callback)
+    channel.basic_consume('to-validator', on_validator_callback, auto_ack=True)
     channel.start_consuming()
 
 
