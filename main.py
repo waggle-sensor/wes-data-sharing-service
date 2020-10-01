@@ -66,6 +66,7 @@ def main():
         level=logging.DEBUG if args.verbose else logging.INFO,
         format='%(asctime)s %(message)s',
         datefmt='%Y/%m/%d %H:%M:%S')
+    # pika logging is too verbose, so we turn it down.
     logging.getLogger('pika').setLevel(logging.CRITICAL)
 
     logging.info('connecting to rabbitmq server at %s.', args.url)
