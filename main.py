@@ -8,7 +8,7 @@ import os
 import logging
 
 
-included_fields = ['ts', 'topic', 'value', 'plugin']
+included_fields = ['ts', 'name', 'value', 'plugin']
 
 
 def on_validator_callback(ch, method, properties, body):
@@ -42,10 +42,10 @@ def on_validator_callback(ch, method, properties, body):
 
     # Fanout based on scope.
     if 'node' in scope:
-        ch.basic_publish('data.topic', msg['topic'], node_body)
+        ch.basic_publish('data.topic', msg['name'], node_body)
         logging.debug('node <- %s', node_body)
     if 'beehive' in scope:
-        ch.basic_publish('to-beehive', msg['topic'], beehive_body)
+        ch.basic_publish('to-beehive', msg['name'], beehive_body)
         logging.debug('beehive <- %s', node_body)
     
     ch.basic_ack(method.delivery_tag)

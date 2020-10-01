@@ -20,15 +20,15 @@ plugin_by_waggle_id_version = {(r['waggle_id'], r['waggle_version']): r for r in
 # NOTE This can *possibly* be generated automatically by ECR, but it may be better to curate a
 # standard list of sensors.
 sensor_table = [
-    {'topic': 'raw.tmp112', 'waggle_id': 0x0001, 'waggle_sub_id': 0, 'unit': '', 'type': str},
-    {'topic': 'env.temperature.tmp112', 'waggle_id': 0x0001, 'waggle_sub_id': 1, 'unit': 'C', 'type': float},
-    {'topic': 'raw.htu21d', 'waggle_id': 0x0002, 'waggle_sub_id': 0, 'unit': 'C', 'type': str},
-    {'topic': 'env.temperature.htu21d', 'waggle_id': 0x0002, 'waggle_sub_id': 1, 'unit': 'C', 'type': float},
-    {'topic': 'env.humidity.htu21d', 'waggle_id': 0x0002, 'waggle_sub_id': 2, 'unit': '%RH', 'type': float},
-    {'topic': 'env.humidity.hih4030', 'waggle_id': 0x0003, 'waggle_sub_id': 1, 'unit': '%RH', 'type': float},
+    {'name': 'raw.tmp112', 'waggle_id': 0x0001, 'waggle_sub_id': 0, 'unit': '', 'type': str},
+    {'name': 'env.temperature.tmp112', 'waggle_id': 0x0001, 'waggle_sub_id': 1, 'unit': 'C', 'type': float},
+    {'name': 'raw.htu21d', 'waggle_id': 0x0002, 'waggle_sub_id': 0, 'unit': 'C', 'type': str},
+    {'name': 'env.temperature.htu21d', 'waggle_id': 0x0002, 'waggle_sub_id': 1, 'unit': 'C', 'type': float},
+    {'name': 'env.humidity.htu21d', 'waggle_id': 0x0002, 'waggle_sub_id': 2, 'unit': '%RH', 'type': float},
+    {'name': 'env.humidity.hih4030', 'waggle_id': 0x0003, 'waggle_sub_id': 1, 'unit': '%RH', 'type': float},
 ]
 
-sensor_by_topic = {r['topic']: r for r in sensor_table}
+sensor_by_name = {r['name']: r for r in sensor_table}
 sensor_by_id_sub_id = {(r['waggle_id'], r['waggle_sub_id']): r for r in sensor_table}
 
 def validate_type(v, t):
@@ -37,7 +37,7 @@ def validate_type(v, t):
 
 # transform intra-node format to waggle protocol
 def local_to_waggle(msg):
-    sensor = sensor_by_topic[msg['topic']]
+    sensor = sensor_by_name[msg['name']]
     plugin = plugin_by_name[msg['plugin']]
     validate_type(msg['value'], sensor['type'])
     return pack_datagram({
@@ -66,7 +66,7 @@ def waggle_to_local(data):
     return {
         'ts': int(s['timestamp'] * 1e9),
         'value': s['value'],
-        'topic': sensor['topic'],
+        'name': sensor['name'],
         'plugin': plugin['name'],
     }
 
