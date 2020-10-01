@@ -1,4 +1,6 @@
-from waggle.protocol import pack_sensorgram, pack_datagram, unpack_datagram, unpack_sensorgram
+from waggle.protocol import pack_sensorgram, unpack_sensorgram
+from waggle.protocol import pack_datagram, unpack_datagram
+from waggle.protocol import pack_message, unpack_message
 
 # NOTE When I say ECR, I really mean, some service to manage SDF / PDF.
 
@@ -40,23 +42,27 @@ def local_to_waggle(msg):
     sensor = sensor_by_name[msg['name']]
     plugin = plugin_by_name[msg['plugin']]
     validate_type(msg['value'], sensor['type'])
-    return pack_datagram({
-        'plugin_id': plugin['waggle_id'],
-        'plugin_major_version': plugin['waggle_version'][0],
-        'plugin_minor_version': plugin['waggle_version'][1],
-        'plugin_patch_version': plugin['waggle_version'][2],
-        'body': pack_sensorgram({
-            'timestamp': int(msg['ts']//1e9),
-            'id': sensor['waggle_id'],
-            'sub_id': sensor['waggle_sub_id'],
-            'value': msg['value'],
-        }),
+    return pack_message({
+        'body': pack_datagram({
+            'plugin_id': plugin['waggle_id'],
+            'plugin_major_version': plugin['waggle_version'][0],
+            'plugin_minor_version': plugin['waggle_version'][1],
+            'plugin_patch_version': plugin['waggle_version'][2],
+            'body': pack_sensorgram({
+                'timestamp': int(msg['ts']//1e9),
+                'id': sensor['waggle_id'],
+                'sub_id': sensor['waggle_sub_id'],
+                'value': msg['value'],
+            })
+        })
     })
 
 
 # transform waggle protocol to intra-node format
 def waggle_to_local(data):
-    d = unpack_datagram(data)
+    m = unpack_message(data)
+    print(m)
+    d = unpack_datagram(m['body'])
     s = unpack_sensorgram(d['body'])
     sensor = sensor_by_id_sub_id[(s['id'], s['sub_id'])]
     plugin_id = d['plugin_id']
