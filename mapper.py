@@ -1,6 +1,10 @@
 from waggle.protocol import pack_sensorgram, unpack_sensorgram
 from waggle.protocol import pack_datagram, unpack_datagram
 from waggle.protocol import pack_message, unpack_message
+import os
+
+WAGGLE_NODE_ID = os.environ.get('WAGGLE_NODE_ID', '0000000000000000')
+WAGGLE_NODE_SUB_ID = os.environ.get('WAGGLE_NODE_SUB_ID', '0000000000000000')
 
 # NOTE When I say ECR, I really mean, some service to manage SDF / PDF.
 
@@ -43,6 +47,8 @@ def local_to_waggle(msg):
     plugin = plugin_by_name[msg['plugin']]
     validate_type(msg['value'], sensor['type'])
     return pack_message({
+        'sender_id': WAGGLE_NODE_ID,
+        'sender_sub_id': WAGGLE_NODE_SUB_ID,
         'body': pack_datagram({
             'plugin_id': plugin['waggle_id'],
             'plugin_major_version': plugin['waggle_version'][0],
