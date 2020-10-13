@@ -6,47 +6,65 @@ import pika
 import json
 import os
 import logging
+from hashlib import sha1
 
 
 def on_validator_callback(ch, method, properties, body):
-    try:
-        msg = json.loads(body)
-    except json.JSONDecodeError:
-        logging.warning('message has bad format %s', body)
+    if properties.type is None:
+        logging.warning('message missing type')
         return
-
-    scope = msg.get('scope', ['node', 'beehive'])
-
-    try:
-        msg = extract_items(msg, ['ts', 'name', 'value', 'plugin'])
-    except KeyError:
-        logging.warning('message missing expected keys %s', msg)
+    if properties.timestamp is None:
+        logging.warning('message missing timestamp')
         return
-
-    if 'node' in scope:
-        publish_to_node(ch, msg)
-    if 'beehive' in scope:
-        publish_to_beehive(ch, msg)
+    if properties.app_id is None:
+        logging.warning('message missing app_id')
+        return
+    if method.routing_key in ['node', 'all']:
+        publish_to_node(ch, properties, body)
+    if method.routing_key in ['beehive', 'all']:
+        publish_to_beehive(ch, properties, body)
     logging.info('processed message')
 
 
-def extract_items(d, ks):
-    return {k: d[k] for k in ks}
-
-
-def publish_to_node(ch, msg):
-    body = json.dumps(msg, separators=(',', ':')).encode()
-    ch.basic_publish('data.topic', msg['name'], body)
+def publish_to_node(ch, properties, body):
+    ch.basic_publish(
+        exchange='data.topic',
+        routing_key=properties.type,
+        properties=properties,
+        body=body)
     logging.debug('node <- %s', body)
 
 
-def publish_to_beehive(ch, msg):
+def publish_to_beehive(ch, properties, body):
+    if properties.content_type is None:
+        value = body
+    elif properties.content_type == 'application/json':
+        value = json.loads(body)
+    elif properties.content_type == 'image/png':
+        value = sha1(body).hexdigest()
+        logging.info('staging image for large file transport with ref %s', value)
+
+    msg = {
+        'ts': properties.timestamp,
+        'name': properties.type,
+        'plugin': properties.app_id,
+        'value': value,
+    }
+
     try:
         body = mapper.local_to_waggle(msg)
     except Exception:
         logging.warning('message could not be serialized %s', msg)
         return
-    ch.basic_publish('to-beehive', msg['name'], body)
+
+    # tag until we work out plan for this
+    properties.content_type = 'application/waggle'
+
+    ch.basic_publish(
+        exchange='to-beehive',
+        routing_key=properties.type,
+        properties=properties,
+        body=body)
     logging.debug('beehive <- %s', body)
 
 

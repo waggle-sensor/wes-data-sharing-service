@@ -18,6 +18,9 @@ plugin_table = [
     {'name': 'simple:0.2.1', 'waggle_id': 1, 'waggle_version': (0, 2, 1)},
     {'name': 'carped:0.1.0', 'waggle_id': 2, 'waggle_version': (0, 1, 0)},
     {'name': 'carped:0.2.0', 'waggle_id': 2, 'waggle_version': (0, 2, 0)},
+    {'name': 'pub:0.0.1', 'waggle_id': 3, 'waggle_version': (0, 0, 1)},
+    {'name': 'transform:0.0.1', 'waggle_id': 4, 'waggle_version': (0, 0, 1)},
+    {'name': 'data-store:0.0.1', 'waggle_id': 5, 'waggle_version': (0, 0, 1)},
 ]
 
 plugin_by_name = {r['name']: r for r in plugin_table}
@@ -26,9 +29,9 @@ plugin_by_waggle_id_version = {(r['waggle_id'], r['waggle_version']): r for r in
 # NOTE This can *possibly* be generated automatically by ECR, but it may be better to curate a
 # standard list of sensors.
 sensor_table = [
-    {'name': 'raw.tmp112', 'waggle_id': 0x0001, 'waggle_sub_id': 0, 'unit': '', 'type': str},
+    {'name': 'raw.tmp112', 'waggle_id': 0x0001, 'waggle_sub_id': 0, 'unit': '', 'type': bytes},
     {'name': 'env.temperature.tmp112', 'waggle_id': 0x0001, 'waggle_sub_id': 1, 'unit': 'C', 'type': float},
-    {'name': 'raw.htu21d', 'waggle_id': 0x0002, 'waggle_sub_id': 0, 'unit': 'C', 'type': str},
+    {'name': 'raw.htu21d', 'waggle_id': 0x0002, 'waggle_sub_id': 0, 'unit': 'C', 'type': bytes},
     {'name': 'env.temperature.htu21d', 'waggle_id': 0x0002, 'waggle_sub_id': 1, 'unit': 'C', 'type': float},
     {'name': 'env.humidity.htu21d', 'waggle_id': 0x0002, 'waggle_sub_id': 2, 'unit': '%RH', 'type': float},
     {'name': 'env.humidity.hih4030', 'waggle_id': 0x0003, 'waggle_sub_id': 1, 'unit': '%RH', 'type': float},
