@@ -93,6 +93,7 @@ def main():
     channel = connection.channel()
 
     logging.info('setting up queues and exchanges.')
+    channel.exchange_declare('data.topic', exchange_type='topic', durable=True)
     declare_exchange_with_queue(channel, 'to-validator')
     declare_exchange_with_queue(channel, 'to-beehive')
     
