@@ -4,6 +4,35 @@ import mapper
 
 class TestMapper(unittest.TestCase):
 
+    def test_parse_version_str(self):
+        self.assertEqual(mapper.parse_version_str('0.0.0'), (0, 0, 0))
+        self.assertEqual(mapper.parse_version_str('1.2.3'), (1, 2, 3))
+        self.assertEqual(mapper.parse_version_str('1.22.333'), (1, 22, 333))
+        with self.assertRaises(ValueError):
+            mapper.parse_version_str('')
+        with self.assertRaises(ValueError):
+            mapper.parse_version_str('1')
+        with self.assertRaises(ValueError):
+            mapper.parse_version_str('1.2')
+        with self.assertRaises(ValueError):
+            mapper.parse_version_str('1.2.3.4')
+    
+    def test_parse_plugin_name_version(self):
+        self.assertEqual(
+            mapper.parse_plugin_name_version('simple:1.2.3'),
+            ('simple', (1, 2, 3)))
+        self.assertEqual(
+            mapper.parse_plugin_name_version('test:0.0.0'),
+            ('test', (0, 0, 0)))
+        with self.assertRaises(ValueError):
+            mapper.parse_plugin_name_version('test')
+        with self.assertRaises(ValueError):
+            mapper.parse_plugin_name_version('test:')
+        with self.assertRaises(ValueError):
+            mapper.parse_plugin_name_version(':1.2.3')
+        with self.assertRaises(ValueError):
+            mapper.parse_plugin_name_version('test:1.2.3:')
+
     def test_end_to_end(self):
         test_cases = [
             {
