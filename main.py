@@ -8,6 +8,7 @@ import os
 import logging
 from hashlib import sha1
 
+WAGGLE_NODE_ID = os.environ.get('WAGGLE_NODE_ID', '0000000000000000')
 
 def on_validator_callback(ch, method, properties, body):
     if properties.type is None:
@@ -16,8 +17,8 @@ def on_validator_callback(ch, method, properties, body):
     if properties.timestamp is None:
         logging.warning('message missing timestamp')
         return
-    if properties.app_id is None:
-        logging.warning('message missing app_id')
+    if properties.reply_to is None:
+        logging.warning('message missing reply_to')
         return
     if method.routing_key in ['node', 'all']:
         publish_to_node(ch, properties, body)
@@ -47,7 +48,7 @@ def publish_to_beehive(ch, properties, body):
     msg = {
         'ts': properties.timestamp,
         'name': properties.type,
-        'plugin': properties.app_id,
+        'plugin': properties.reply_to,
         'value': value,
     }
 
@@ -59,6 +60,9 @@ def publish_to_beehive(ch, properties, body):
 
     # tag until we work out plan for this
     properties.content_type = 'application/waggle'
+
+    # add self to route
+    properties.reply_to = '.'.join([WAGGLE_NODE_ID, properties.reply_to])
 
     ch.basic_publish(
         exchange='to-beehive',
