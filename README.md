@@ -18,13 +18,3 @@ The data sharing service is what makes data available both to plugins on the nod
   * If I am in early development, I probably want to start trying out data sharing without being blocked by having to predefine everything.
   * If I am building a set of closely related apps, I may want local only messages which don't need to be in the ontology.
 * The "serialize to waggle" stage takes the intra-node message format and uses the ontology / SDF / PDF to serialize it to a waggle protocol message.
-
-## Message Format
-
-The current intra-node message format is a JSON structure with fields:
-
-* `ts`. Message timestamp in nanoseconds since epoch. 
-* `value`. Message value.
-* `topic`. Ontology name of message.
-* `plugin`. Plugin which created message
-* `scope`. Subset of `["node", "beehive"]` used to route message.
