@@ -10,6 +10,11 @@ from hashlib import sha1
 
 WAGGLE_NODE_ID = os.environ.get('WAGGLE_NODE_ID', '0000000000000000')
 
+RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'rabbitmq-server')
+RABBITMQ_PORT = int(os.environ.get('RABBITMQ_PORT', '5672'))
+RABBITMQ_USERNAME = os.environ.get('RABBITMQ_USERNAME', 'service')
+RABBITMQ_PASSWORD = os.environ.get('RABBITMQ_PASSWORD', 'service')
+
 def on_validator_callback(ch, method, properties, body):
     if properties.type is None:
         logging.warning('message missing type')
@@ -81,7 +86,10 @@ def declare_exchange_with_queue(ch: pika.adapters.blocking_connection.BlockingCh
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-v', '--verbose', action='store_true', help='enable verbose logging')
-    parser.add_argument('url', help='rabbitmq server url')
+    parser.add_argument('--rabbitmq-host', default=RABBITMQ_HOST, help='rabbitmq host')
+    parser.add_argument('--rabbitmq-port', default=RABBITMQ_PORT, type=int, help='rabbitmq port')
+    parser.add_argument('--rabbitmq-username', default=RABBITMQ_USERNAME, help='rabbitmq username')
+    parser.add_argument('--rabbitmq-password', default=RABBITMQ_PASSWORD, help='rabbitmq password')
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -91,9 +99,17 @@ def main():
     # pika logging is too verbose, so we turn it down.
     logging.getLogger('pika').setLevel(logging.CRITICAL)
 
-    logging.info('connecting to rabbitmq server at %s.', args.url)
-    connection_parameters = pika.URLParameters(args.url)
-    connection = pika.BlockingConnection(connection_parameters)
+    params = pika.ConnectionParameters(
+        host=args.rabbitmq_host,
+        port=args.rabbitmq_port,
+        credentials=pika.PlainCredentials(
+            username=args.rabbitmq_username,
+            password=args.rabbitmq_password,
+        ),
+    )
+
+    logging.info('connecting to rabbitmq server at %s:%d as %s.', params.host, params.port, params.credentials.username)
+    connection = pika.BlockingConnection(params)
     channel = connection.channel()
 
     logging.info('setting up queues and exchanges.')
