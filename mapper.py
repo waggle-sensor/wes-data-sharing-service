@@ -14,10 +14,7 @@ WAGGLE_NODE_SUB_ID = os.environ.get('WAGGLE_NODE_SUB_ID', '0000000000000000')
 # Should *really* rethink if we want to split id / version at protocol level instead of just name.
 plugin_table = [
     {'name': 'simple', 'waggle_id': 1},
-    {'name': 'carped', 'waggle_id': 2},
-    {'name': 'pub', 'waggle_id': 3},
-    {'name': 'transform', 'waggle_id': 4},
-    {'name': 'data-store', 'waggle_id': 5},
+    {'name': 'carped', 'waggle_id': 50},
     {'name': 'test', 'waggle_id': 0xffff},
 ]
 
@@ -33,6 +30,8 @@ sensor_table = [
     {'name': 'env.temperature.htu21d', 'waggle_id': 0x0002, 'waggle_sub_id': 1, 'unit': 'C', 'type': float},
     {'name': 'env.humidity.htu21d', 'waggle_id': 0x0002, 'waggle_sub_id': 2, 'unit': '%RH', 'type': float},
     {'name': 'env.humidity.hih4030', 'waggle_id': 0x0003, 'waggle_sub_id': 1, 'unit': '%RH', 'type': float},
+    {'name': 'env.count.car', 'waggle_id': 0x3001, 'waggle_sub_id': 1, 'unit': '', 'type': int},
+    {'name': 'env.count.pedestrian', 'waggle_id': 0x3001, 'waggle_sub_id': 2, 'unit': '', 'type': int},
     # test values for debugging
     {'name': 'test.int.1', 'waggle_id': 0xffff, 'waggle_sub_id': 1, 'unit': '', 'type': int},
     {'name': 'test.int.2', 'waggle_id': 0xffff, 'waggle_sub_id': 2, 'unit': '', 'type': int},
