@@ -63,6 +63,27 @@ class TestMapper(unittest.TestCase):
                 'scope': 'beehive',
                 'plugin': 'simple:0.2.1',
             },
+            {
+                'ts': 1600973662457836000,
+                'value': 0.1,
+                'name': 'env.humidity.hih4030',
+                'scope': 'beehive',
+                'plugin': 'simple:0.2.1',
+            },
+            {
+                'ts': 1609765905843405828,
+                'value': 1,
+                'name': 'env.count.car',
+                'scope': 'beehive',
+                'plugin': 'carped:1.2.3',
+            },
+            {
+                'ts': 1609765905843405828,
+                'value': 1,
+                'name': 'env.count.pedestrian',
+                'scope': 'beehive',
+                'plugin': 'carped:0.1.0',
+            },
         ]
 
         for msg in test_cases:
