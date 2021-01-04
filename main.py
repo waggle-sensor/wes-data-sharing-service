@@ -16,6 +16,7 @@ RABBITMQ_USERNAME = os.environ.get('RABBITMQ_USERNAME', 'service')
 RABBITMQ_PASSWORD = os.environ.get('RABBITMQ_PASSWORD', 'service')
 
 def on_validator_callback(ch, method, properties, body):
+    logging.info('processing message')
     if properties.type is None:
         logging.warning('message missing type')
         return
