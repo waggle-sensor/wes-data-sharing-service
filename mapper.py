@@ -15,7 +15,7 @@ WAGGLE_NODE_SUB_ID = os.environ.get('WAGGLE_NODE_SUB_ID', '0000000000000000')
 plugin_table = [
     {'name': 'simple', 'waggle_id': 1},
     {'name': 'carped', 'waggle_id': 50},
-    {'name': 'test', 'waggle_id': 0xffff},
+    {'name': 'test-pipeline', 'waggle_id': 0xffff},
 ]
 
 plugin_by_name = {r['name']: r for r in plugin_table}
@@ -33,6 +33,7 @@ sensor_table = [
     {'name': 'env.count.car', 'waggle_id': 0x3001, 'waggle_sub_id': 1, 'unit': '', 'type': int},
     {'name': 'env.count.pedestrian', 'waggle_id': 0x3001, 'waggle_sub_id': 2, 'unit': '', 'type': int},
     # test values for debugging
+    {'name': 'test', 'waggle_id': 0xffff, 'waggle_sub_id': 0xff, 'unit': '', 'type': float},
     {'name': 'test.int.1', 'waggle_id': 0xffff, 'waggle_sub_id': 1, 'unit': '', 'type': int},
     {'name': 'test.int.2', 'waggle_id': 0xffff, 'waggle_sub_id': 2, 'unit': '', 'type': int},
     {'name': 'test.int.3', 'waggle_id': 0xffff, 'waggle_sub_id': 3, 'unit': '', 'type': int},
