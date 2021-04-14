@@ -16,5 +16,5 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-          repository: waggle/beehive-upload-server
+          repository: waggle/${{ github.event.repository.name }}
           tag_with_ref: true
