@@ -1,0 +1,13 @@
+name: Run tests
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  run_tests:
+    name: Run tests
+    steps:
+      - uses: actions/checkout@v2
+      - name: Run tests
+        run: python3 test.py
