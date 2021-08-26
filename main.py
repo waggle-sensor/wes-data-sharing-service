@@ -16,6 +16,28 @@ RABBITMQ_USERNAME = os.environ.get('RABBITMQ_USERNAME', 'service')
 RABBITMQ_PASSWORD = os.environ.get('RABBITMQ_PASSWORD', 'service')
 
 
+user_id_pattern_v1 = re.compile(r"^plugin\.(\S+:\d+\.\d+\.\d+)$")
+user_id_pattern_v2 = re.compile(r"^plugin\.(\S+)-(\d+-\d+-\d+)-([0-9a-f]{8})$")
+
+
+def match_plugin_user_id(s):
+    # match early user_id with no config / instance hash
+    match = user_id_pattern_v1.match(s)
+    if match is not None:
+        return match.group(1)
+
+    # match newer user_id which include config / instance hash
+    # TODO(sean) look at how to incorporate the hash / instance info into the data stream,
+    # if needed. using this directly in a meta field will blow up the data quite a lot and
+    # have no semantic meaning. *maybe* the user will add more meaningful meta tags like
+    # sensor or camera which will distinguish this enough.
+    match = user_id_pattern_v2.match(s)
+    if match is not None:
+        return match.group(1) + ":" + match.group(2).replace("-", ".")
+
+    return None
+
+
 def on_validator_callback(ch, method, properties, body):
     logging.debug("processing message")
     try:
@@ -30,15 +52,14 @@ def on_validator_callback(ch, method, properties, body):
         return
 
     # tag message with plugin and node metadata
-    
-    # rabbitmq user_id must has format "plugin.name:version"
-    match = re.match(r"plugin\.(\S+:\S+)", properties.user_id)
-    if match is None:
+    plugin = match_plugin_user_id(properties.user_id)
+    if plugin is None:
         logging.warning('invalid message user ID %s', properties.user_id)
         ch.basic_ack(method.delivery_tag)
         return
-    msg.meta["plugin"] = match.group(1)
+    msg.meta["plugin"] = plugin
     msg.meta["node"] = WAGGLE_NODE_ID
+    # TODO(sean) add device meta field
     body = message.dump(msg)
 
     scope = method.routing_key
