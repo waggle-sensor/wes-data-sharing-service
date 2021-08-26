@@ -5,8 +5,11 @@ on:
     branches: [ main ]
 
 jobs:
-  run_tests:
-    name: Run tests
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.8
     steps:
       - uses: actions/checkout@v2
       - name: Run tests
