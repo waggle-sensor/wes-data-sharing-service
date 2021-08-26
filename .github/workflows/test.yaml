@@ -12,5 +12,7 @@ jobs:
         python-version: [3.8]
     steps:
       - uses: actions/checkout@v2
+      - name: Install deps
+        run: pip3 install https://github.com/waggle-sensor/pywaggle/archive/refs/tags/0.43.2.zip
       - name: Run tests
         run: python3 test.py
