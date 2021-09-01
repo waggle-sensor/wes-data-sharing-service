@@ -117,6 +117,8 @@ def main():
             password=args.rabbitmq_password,
         ),
         client_properties={'name': 'data-sharing-service'},
+        connection_attempts=3,
+        retry_delay=10,
     )
 
     logging.info('connecting to rabbitmq server at %s:%d as %s.', params.host, params.port, params.credentials.username)
