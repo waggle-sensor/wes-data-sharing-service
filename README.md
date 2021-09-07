@@ -12,6 +12,13 @@ The data sharing service is what makes data available both to plugins on the nod
 └│┌─────────┐ ───> │ Validate │ ──────┬─────> │ Serialize │ ───> To Beehive
  └│ Plugins │      │ Message  │       v       │ to Waggle │
   └─────────┘      └──────────┘   To Plugins  └───────────┘
+                        ^
+                        |  Map plugin Pod
+                        | runtime metadata.
+                        v
+                  ┌───────────┐
+                  │  k3s API  |
+                  └───────────┘
 ```
 
 * The "validate message" stage checks to see if the message is a valid intra-node message. Technical note: We _do not_ check if the name exists in the ontology here. Two very interesting use cases were pointed out:
