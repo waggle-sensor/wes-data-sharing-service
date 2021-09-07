@@ -13,8 +13,8 @@ The data sharing service is what makes data available both to plugins on the nod
  └│ Plugins │      │ Message  │       v       │ to Waggle │
   └─────────┘      └──────────┘   To Plugins  └───────────┘
                         ^
-                        |  Map plugin Pod
-                        | runtime metadata.
+                        | Load / cache plugin Pod
+                        |   runtime metadata.
                         v
                  ┌────────────┐
                  │ Kubernetes |
