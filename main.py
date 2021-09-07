@@ -70,22 +70,22 @@ def create_on_validator_callback():
         # update the cached pod metadata if we encounter a new app_id
         # NOTE this is expected to happen infrequently. if it is happen frequently, it indicates
         # the bigger problem that plugin scheduling is thrashing.
-        if properties.app_id is None:
-            logging.warning('message missing amqp property app_id %s')
-            ch.basic_ack(method.delivery_tag)
-            return
-        pod_uid = properties.app_id
+        if properties.app_id is not None:
+            pod_uid = properties.app_id
 
-        if pod_uid not in pod_node_name:
-            logging.info('got new pod uid %s. updating pod metadata...', pod_uid)
-            update_pod_node_names(pod_node_name)
-            logging.info('updated pod metadata.')
+            # update pod metadata, if needed
+            if pod_uid not in pod_node_name:
+                logging.info('got new pod uid %s. updating pod metadata...', pod_uid)
+                update_pod_node_names(pod_node_name)
+                logging.info('updated pod metadata.')
 
-        # add host metadata
-        try:
-            msg.meta["host"] = pod_node_name[pod_uid]
-        except KeyError:
-            logging.exception(f"unable to find pod node name for {pod_uid}")
+            # add host metadata
+            try:
+                msg.meta["host"] = pod_node_name[pod_uid]
+            except KeyError:
+                logging.exception("unable to find pod node name for %s", pod_uid)
+        else:
+            logging.warning('message missing amqp app_id property %r', msg)
 
         # TODO(sean) now we an totally clean up the dependence on user_id here...
         # all the actual metadata will be discoverable via a look up k3s
