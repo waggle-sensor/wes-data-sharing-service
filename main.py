@@ -7,6 +7,7 @@ import os
 import logging
 import waggle.message as message
 import re
+import kubernetes
 
 
 WAGGLE_NODE_ID = os.environ.get('WAGGLE_NODE_ID', '0000000000000000')
@@ -21,11 +22,13 @@ user_id_pattern_v2 = re.compile(r"^plugin\.(\S+)-(\d+-\d+-\d+)-([0-9a-f]{8})$")
 
 
 def match_plugin_user_id(s):
+    # type sanity check
+    if not isinstance(s, str):
+        return None
     # match early user_id with no config / instance hash
     match = user_id_pattern_v1.match(s)
     if match is not None:
         return match.group(1)
-
     # match newer user_id which include config / instance hash
     # TODO(sean) look at how to incorporate the hash / instance info into the data stream,
     # if needed. using this directly in a meta field will blow up the data quite a lot and
@@ -34,57 +37,98 @@ def match_plugin_user_id(s):
     match = user_id_pattern_v2.match(s)
     if match is not None:
         return match.group(1) + ":" + match.group(2).replace("-", ".")
-
     return None
 
 
-def on_validator_callback(ch, method, properties, body):
-    logging.debug("processing message")
-    try:
-        msg = message.load(body)
-    except json.JSONDecodeError:
-        logging.warning('failed to parse message %s', body)
+def update_pod_node_names(pod_node_name):
+    # clear all existing items since we will read in everything that's actually Running
+    pod_node_name.clear()
+    # scan pods from kubernetes
+    v1api = kubernetes.client.CoreV1Api()
+    ret = v1api.list_namespaced_pod("default")
+    for i in ret.items:
+        pod_node_name[i.metadata.uid] = i.spec.node_name
+
+
+def create_on_validator_callback():
+    pod_node_name = {}
+
+    def on_validator_callback(ch, method, properties, body):
+        logging.debug("processing message")
+
+        try:
+            msg = message.load(body)
+        except json.JSONDecodeError:
+            logging.warning('failed to parse message %s', body)
+            ch.basic_ack(method.delivery_tag)
+            return
+        except KeyError as key:
+            logging.warning('message missing key %s', key)
+            ch.basic_ack(method.delivery_tag)
+            return
+
+        # update the cached pod metadata if we encounter a new app_id
+        # NOTE this is expected to happen infrequently. if it is happen frequently, it indicates
+        # the bigger problem that plugin scheduling is thrashing.
+        if properties.app_id is None:
+            logging.warning('message missing amqp property app_id %s')
+            ch.basic_ack(method.delivery_tag)
+            return
+        pod_uid = properties.app_id
+
+        if pod_uid not in pod_node_name:
+            logging.info('got new pod uid %s. updating pod metadata...', pod_uid)
+            update_pod_node_names(pod_node_name)
+            logging.info('updated pod metadata.')
+
+        # add host metadata
+        try:
+            msg.meta["host"] = pod_node_name[pod_uid]
+        except KeyError:
+            logging.exception(f"unable to find pod node name for {pod_uid}")
+
+        # TODO(sean) now we an totally clean up the dependence on user_id here...
+        # all the actual metadata will be discoverable via a look up k3s
+        # for example, we can just get all the annotations / labels from the metadata fields
+        # waggle.io
+
+        # validate and add plugin metadata
+        plugin = match_plugin_user_id(properties.user_id)
+        if plugin is None:
+            logging.warning('invalid message user_id %r', properties.user_id)
+            ch.basic_ack(method.delivery_tag)
+            return
+        msg.meta["plugin"] = plugin
+
+        # add node metadata
+        msg.meta["node"] = WAGGLE_NODE_ID
+
+        body = message.dump(msg)
+        scope = method.routing_key
+
+        if scope not in ['node', 'beehive', 'all']:
+            logging.warning('invalid message scope %s', scope)
+            ch.basic_ack(method.delivery_tag)
+            return
+
+        if scope in ['node', 'all']:
+            logging.debug('forwarding message type "%s" to local', msg.name)
+            ch.basic_publish(
+                exchange='data.topic',
+                routing_key=msg.name,
+                body=body)
+
+        if scope in ['beehive', 'all']:
+            logging.debug('forwarding message type "%s" to beehive', msg.name)
+            ch.basic_publish(
+                exchange='to-beehive',
+                routing_key=msg.name,
+                body=body)
+
         ch.basic_ack(method.delivery_tag)
-        return
-    except KeyError as key:
-        logging.warning('message missing key %s', key)
-        ch.basic_ack(method.delivery_tag)
-        return
-
-    # tag message with plugin and node metadata
-    plugin = match_plugin_user_id(properties.user_id)
-    if plugin is None:
-        logging.warning('invalid message user ID %s', properties.user_id)
-        ch.basic_ack(method.delivery_tag)
-        return
-    msg.meta["plugin"] = plugin
-    msg.meta["node"] = WAGGLE_NODE_ID
-    # TODO(sean) add device meta field
-    body = message.dump(msg)
-
-    scope = method.routing_key
-
-    if scope not in ['node', 'beehive', 'all']:
-        logging.warning('invalid message scope %s', scope)
-        ch.basic_ack(method.delivery_tag)
-        return
-
-    if scope in ['node', 'all']:
-        logging.debug('forwarding message type "%s" to local', msg.name)
-        ch.basic_publish(
-            exchange='data.topic',
-            routing_key=msg.name,
-            body=body)
-
-    if scope in ['beehive', 'all']:
-        logging.debug('forwarding message type "%s" to beehive', msg.name)
-        ch.basic_publish(
-            exchange='to-beehive',
-            routing_key=msg.name,
-            body=body)
-
-    ch.basic_ack(method.delivery_tag)
-    logging.debug('processed message')
+        logging.debug('processed message')
+    
+    return on_validator_callback
 
 
 def declare_exchange_with_queue(ch: pika.adapters.blocking_connection.BlockingChannel, name: str):
@@ -96,6 +140,7 @@ def declare_exchange_with_queue(ch: pika.adapters.blocking_connection.BlockingCh
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--debug', action='store_true', help='enable verbose logging')
+    parser.add_argument('--kubeconfig', default=None, help='kubernetes config')
     parser.add_argument('--rabbitmq-host', default=RABBITMQ_HOST, help='rabbitmq host')
     parser.add_argument('--rabbitmq-port', default=RABBITMQ_PORT, type=int, help='rabbitmq port')
     parser.add_argument('--rabbitmq-username', default=RABBITMQ_USERNAME, help='rabbitmq username')
@@ -108,6 +153,13 @@ def main():
         datefmt='%Y/%m/%d %H:%M:%S')
     # pika logging is too verbose, so we turn it down.
     logging.getLogger('pika').setLevel(logging.CRITICAL)
+
+    # load incluster service account config
+    # NOTE the service account needs read access to pod info
+    if args.kubeconfig is None:
+        kubernetes.config.load_incluster_config()
+    else:
+        kubernetes.config.load_kube_config(args.kubeconfig)
 
     params = pika.ConnectionParameters(
         host=args.rabbitmq_host,
@@ -131,7 +183,7 @@ def main():
     declare_exchange_with_queue(channel, 'to-beehive')
     
     logging.info('starting main process.')
-    channel.basic_consume('to-validator', on_validator_callback)
+    channel.basic_consume('to-validator', create_on_validator_callback())
     channel.start_consuming()
 
 if __name__ == '__main__':
