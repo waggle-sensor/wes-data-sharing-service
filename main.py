@@ -10,7 +10,8 @@ import re
 import kubernetes
 
 
-WAGGLE_NODE_ID = os.environ.get('WAGGLE_NODE_ID', '0000000000000000')
+WAGGLE_NODE_ID = os.environ['WAGGLE_NODE_ID'].lower()
+WAGGLE_NODE_VSN = os.environ.get('WAGGLE_NODE_VSN', '').upper()
 RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'rabbitmq-server')
 RABBITMQ_PORT = int(os.environ.get('RABBITMQ_PORT', '5672'))
 RABBITMQ_USERNAME = os.environ.get('RABBITMQ_USERNAME', 'service')
@@ -102,6 +103,10 @@ def create_on_validator_callback():
 
         # add node metadata
         msg.meta["node"] = WAGGLE_NODE_ID
+
+        # add vsn metadata, if nonempty
+        if WAGGLE_NODE_VSN != '':
+            msg.meta["vsn"] = WAGGLE_NODE_VSN
 
         body = message.dump(msg)
         scope = method.routing_key
