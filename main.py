@@ -41,16 +41,6 @@ def match_plugin_user_id(s):
     return None
 
 
-def update_pod_node_names(pods):
-    # clear all existing items since we will read in everything that's actually Running
-    pods.clear()
-    # scan pods from kubernetes
-    v1api = kubernetes.client.CoreV1Api()
-    ret = v1api.list_namespaced_pod("default")
-    for item in ret.items:
-        pods[item.metadata.uid] = item
-
-
 class InvalidMessageError(Exception):
 
     def __init__(self, error):
@@ -112,6 +102,16 @@ def publish_message(ch, scope, msg):
             body=body)
 
 
+def update_pod_node_names(pods):
+    # clear all existing items since we will read in everything that's actually Running
+    pods.clear()
+    # scan pods from kubernetes
+    v1api = kubernetes.client.CoreV1Api()
+    ret = v1api.list_namespaced_pod("default")
+    for item in ret.items:
+        pods[item.metadata.uid] = item
+
+
 def create_on_validator_callback():
     pods = {}
 
@@ -131,6 +131,9 @@ def create_on_validator_callback():
             msg = load_message(pods, properties, body)
             publish_message(ch, method.routing_key, msg)
         except InvalidMessageError:
+            # NOTE my assumption is that we generally should not have many invalid messages by
+            # the time we've deployed code to the edge, so we'd like to know as much as possible
+            # about them. we can dial this logging down if that turns out to be a bad assumption.
             logging.exception("dropping invalid message.")
             ch.basic_ack(method.delivery_tag)
             return
