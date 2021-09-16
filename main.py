@@ -8,14 +8,23 @@ import logging
 import waggle.message as message
 import re
 import kubernetes
+from os import getenv
 
 
-WAGGLE_NODE_ID = os.environ.get("WAGGLE_NODE_ID", "")
-WAGGLE_NODE_VSN = os.environ.get("WAGGLE_NODE_VSN", "")
-RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "rabbitmq-server")
-RABBITMQ_PORT = int(os.environ.get("RABBITMQ_PORT", "5672"))
-RABBITMQ_USERNAME = os.environ.get("RABBITMQ_USERNAME", "service")
-RABBITMQ_PASSWORD = os.environ.get("RABBITMQ_PASSWORD", "service")
+class AppState:
+    """AppState encapsulates the config and state of this app. It's primarily used to store cached Pod info."""
+
+    def __init__(self, node, vsn, pods={}):
+        self.node = node
+        self.vsn = vsn
+        self.pods = pods
+
+
+class InvalidMessageError(Exception):
+    """InvalidMessageError is throw to indicate that a message is invalid. (Bad JSON data, missing fields, etc.)"""
+
+    def __init__(self, error):
+        self.error = error
 
 
 user_id_pattern_v1 = re.compile(r"^plugin\.(\S+:\d+\.\d+\.\d+)$")
@@ -41,13 +50,7 @@ def match_plugin_user_id(s):
     return None
 
 
-class InvalidMessageError(Exception):
-
-    def __init__(self, error):
-        self.error = error
-
-
-def load_message(pods, properties, body):
+def load_message(appstate: AppState, properties: pika.BasicProperties, body: bytes):
     try:
         msg = message.load(body)
     except json.JSONDecodeError:
@@ -59,12 +62,13 @@ def load_message(pods, properties, body):
     if properties.app_id is not None:
         pod_uid = properties.app_id
         try:
-            pod = pods[pod_uid]
+            pod = appstate.pods[pod_uid]
         except KeyError:
             raise InvalidMessageError(f"unable to find pod node name for {pod_uid}")
-        msg.meta["host"] = pod.spec.node_name
-        # TODO use Pod spec to get actual image used
+        # TODO prepare to add job and task metadata, then change plugin metadata to actual image used
+        # msg.meta["task"] = "..."
         # msg.meta["plugin"] = pod.spec.containers[0].image
+        msg.meta["host"] = pod.spec.node_name
 
     # add plugin metadata
     plugin = match_plugin_user_id(properties.user_id)
@@ -72,11 +76,32 @@ def load_message(pods, properties, body):
         raise InvalidMessageError(f"invalid message user_id {properties.user_id!r}")
     msg.meta["plugin"] = plugin
 
+    # add scheduler metadata (mocked out for now)
+    msg.meta["job"] = "sage"
+    msg.meta["task"] = "sage-" + plugin.replace(":", "-")
+
     # add node metadata
-    if WAGGLE_NODE_ID != "":
-        msg.meta["node"] = WAGGLE_NODE_ID
-    if WAGGLE_NODE_VSN != "":
-        msg.meta["vsn"] = WAGGLE_NODE_VSN
+    if appstate.node != "":
+        msg.meta["node"] = appstate.node
+    if appstate.vsn != "":
+        msg.meta["vsn"] = appstate.vsn
+
+    # rewrite upload messages to use url
+    if msg.name == "upload":
+        job = msg.meta["job"]
+        task = msg.meta["task"]
+        node = appstate.node
+        try:
+            filename = msg.meta["filename"]
+        except KeyError:
+            raise InvalidMessageError(f"upload messages must contain filename: {msg!r}")
+        
+        msg = message.Message(
+            timestamp=msg.timestamp,
+            name=msg.name,
+            meta=msg.meta.copy(),
+            value=f"https://storage.sagecontinuum.org/api/v1/data/{job}/{task}/{node}/{msg.timestamp}-{filename}"
+        )
 
     return msg
 
@@ -102,7 +127,8 @@ def publish_message(ch, scope, msg):
             body=body)
 
 
-def update_pod_node_names(pods):
+def update_pod_node_names(pods: dict):
+    """update_pod_node_names updates pods to the current {Pod UID: Pod Info} state."""
     # clear all existing items since we will read in everything that's actually Running
     pods.clear()
     # scan pods from kubernetes
@@ -112,9 +138,7 @@ def update_pod_node_names(pods):
         pods[item.metadata.uid] = item
 
 
-def create_on_validator_callback():
-    pods = {}
-
+def create_on_validator_callback(appstate):
     def on_validator_callback(ch, method, properties, body):
         logging.debug("processing message.")
 
@@ -122,13 +146,13 @@ def create_on_validator_callback():
         # TODO think about rogue case where a made up UID is rapidly sent
         if properties.app_id is not None and properties.app_id not in pods:
             logging.info("got new pod uid %s. updating pod metadata...", properties.app_id)
-            update_pod_node_names(pods)
+            update_pod_node_names(appstate.pods)
             logging.info("updated pod metadata.")
             # TODO think about sending info message indicating we have data from this Pod now.
             # this could be sent up to further bind metadata together on the cloud.
 
         try:
-            msg = load_message(pods, properties, body)
+            msg = load_message(appstate.pods, properties, body)
             publish_message(ch, method.routing_key, msg)
         except InvalidMessageError:
             # NOTE my assumption is that we generally should not have many invalid messages by
@@ -154,10 +178,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", action="store_true", help="enable verbose logging")
     parser.add_argument("--kubeconfig", default=None, help="kubernetes config")
-    parser.add_argument("--rabbitmq-host", default=RABBITMQ_HOST, help="rabbitmq host")
-    parser.add_argument("--rabbitmq-port", default=RABBITMQ_PORT, type=int, help="rabbitmq port")
-    parser.add_argument("--rabbitmq-username", default=RABBITMQ_USERNAME, help="rabbitmq username")
-    parser.add_argument("--rabbitmq-password", default=RABBITMQ_PASSWORD, help="rabbitmq password")
+    parser.add_argument("--rabbitmq-host", default=getenv("RABBITMQ_HOST", "rabbitmq-server"), help="rabbitmq host")
+    parser.add_argument("--rabbitmq-port", default=int(getenv("RABBITMQ_PORT", "5672")), type=int, help="rabbitmq port")
+    parser.add_argument("--rabbitmq-username", default=getenv("RABBITMQ_USERNAME", "service"), help="rabbitmq username")
+    parser.add_argument("--rabbitmq-password", default=getenv("RABBITMQ_PASSWORD", "service"), help="rabbitmq password")
+    parser.add_argument("--waggle-node-id", default=getenv("WAGGLE_NODE_ID", ""), help="waggle node id")
+    parser.add_argument("--waggle-node-vsn", default=getenv("WAGGLE_NODE_VSN", ""), help="waggle node vsn")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -196,7 +222,11 @@ def main():
     declare_exchange_with_queue(channel, "to-beehive")
     
     logging.info("starting main process.")
-    channel.basic_consume("to-validator", create_on_validator_callback())
+    appstate = AppState(
+        node=args.waggle_node_id,
+        vsn=args.waggle_node_vsn,
+    )
+    channel.basic_consume("to-validator", create_on_validator_callback(appstate))
     channel.start_consuming()
 
 if __name__ == "__main__":
