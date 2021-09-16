@@ -73,6 +73,8 @@ def load_message(pods, properties, body):
         except KeyError:
             raise InvalidMessageError(f"unable to find pod node name for {pod_uid}")
         msg.meta["host"] = pod.spec.node_name
+        # TODO use Pod spec to get actual image used
+        # msg.meta["plugin"] = pod.spec.containers[0].image
 
     # add plugin metadata
     plugin = match_plugin_user_id(properties.user_id)
@@ -122,6 +124,8 @@ def create_on_validator_callback():
             logging.info("got new pod uid %s. updating pod metadata...", properties.app_id)
             update_pod_node_names(pods)
             logging.info("updated pod metadata.")
+            # TODO think about sending info message indicating we have data from this Pod now.
+            # this could be sent up to further bind metadata together on the cloud.
 
         try:
             msg = load_message(pods, properties, body)
