@@ -58,27 +58,24 @@ def load_message(appstate: AppState, properties: pika.BasicProperties, body: byt
     except KeyError as key:
         raise InvalidMessageError(f"message missing key {key}")
 
-    # add metadata derived from pod info
-    if properties.app_id is not None:
-        pod_uid = properties.app_id
-        try:
-            pod = appstate.pods[pod_uid]
-        except KeyError:
-            raise InvalidMessageError(f"unable to find pod node name for {pod_uid}")
-        # TODO prepare to add job and task metadata, then change plugin metadata to actual image used
-        # msg.meta["task"] = "..."
-        # msg.meta["plugin"] = pod.spec.containers[0].image
-        msg.meta["host"] = pod.spec.node_name
-
     # add plugin metadata
     plugin = match_plugin_user_id(properties.user_id)
     if plugin is None:
         raise InvalidMessageError(f"invalid message user_id {properties.user_id!r}")
     msg.meta["plugin"] = plugin
 
-    # add scheduler metadata (mocked out for now)
-    msg.meta["job"] = "sage"
-    msg.meta["task"] = "sage-" + plugin.replace(":", "-")
+    # add scheduler metadata
+    if properties.app_id is not None:
+        pod_uid = properties.app_id
+        try:
+            pod = appstate.pods[pod_uid]
+        except KeyError:
+            raise InvalidMessageError(f"unable to find pod node name for {pod_uid}")
+        msg.meta["host"] = pod.spec.node_name
+        msg.meta["job"] = pod.metadata.labels.get("sagecontinuum.org/plugin-job", "sage")
+        msg.meta["task"] = pod.metadata.labels.get("sagecontinuum.org/plugin-task", plugin.replace(":", "-"))
+        # TODO use pod image for this and include namespace?
+        # msg.meta["plugin"] = pod.spec.containers[0].image.split("/")[-1]
 
     # add node metadata
     if appstate.node != "":
@@ -99,7 +96,7 @@ def load_message(appstate: AppState, properties: pika.BasicProperties, body: byt
         msg = message.Message(
             timestamp=msg.timestamp,
             name=msg.name,
-            meta=msg.meta.copy(),
+            meta=msg.meta, # load_message is still the sole owner so no need to copy
             value=f"https://storage.sagecontinuum.org/api/v1/data/{job}/{task}/{node}/{msg.timestamp}-{filename}"
         )
 
@@ -127,15 +124,17 @@ def publish_message(ch, scope, msg):
             body=body)
 
 
+# NOTE update_pod_node_names introduces coupling between the data pipeline and
+# kubernetes... however, conceptually we'll just coupling message data with scheduling
+# metadata. for now, that scheduler is kubernetes, which is why we're talking directly
+# to it. (kubernetes is the only thing which *actually* knows where a Pod is assigned)
 def update_pod_node_names(pods: dict):
     """update_pod_node_names updates pods to the current {Pod UID: Pod Info} state."""
-    # clear all existing items since we will read in everything that's actually Running
     pods.clear()
-    # scan pods from kubernetes
     v1api = kubernetes.client.CoreV1Api()
     ret = v1api.list_namespaced_pod("default")
-    for item in ret.items:
-        pods[item.metadata.uid] = item
+    for pod in ret.items:
+        pods[pod.metadata.uid] = pod
 
 
 def create_on_validator_callback(appstate):
