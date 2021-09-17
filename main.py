@@ -159,7 +159,7 @@ def create_on_validator_callback(appstate):
 
         # update cached pod info when we receive an unknown pod UID
         # TODO think about rogue case where a made up UID is rapidly sent
-        if properties.app_id is not None and properties.app_id not in pods:
+        if properties.app_id is not None and properties.app_id not in appstate.pods:
             logging.info("got new pod uid %s. updating pod metadata...", properties.app_id)
             update_pod_node_names(appstate.pods)
             logging.info("updated pod metadata.")
