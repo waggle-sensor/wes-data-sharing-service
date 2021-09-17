@@ -167,7 +167,7 @@ def create_on_validator_callback(appstate):
             # this could be sent up to further bind metadata together on the cloud.
 
         try:
-            msg = load_message(appstate.pods, properties, body)
+            msg = load_message(appstate, properties, body)
             publish_message(ch, method.routing_key, msg)
         except InvalidMessageError:
             # NOTE my assumption is that we generally should not have many invalid messages by
@@ -237,10 +237,7 @@ def main():
     declare_exchange_with_queue(channel, "to-beehive")
     
     logging.info("starting main process.")
-    appstate = AppState(
-        node=args.waggle_node_id,
-        vsn=args.waggle_node_vsn,
-    )
+    appstate = AppState(node=args.waggle_node_id, vsn=args.waggle_node_vsn)
     channel.basic_consume("to-validator", create_on_validator_callback(appstate))
     channel.start_consuming()
 
