@@ -1,4 +1,5 @@
 import unittest
+import wagglemsg
 import pika
 from waggle import message
 from kubernetes.client import V1Pod, V1PodSpec, V1ObjectMeta, V1Container
@@ -69,7 +70,7 @@ class TestMain(unittest.TestCase):
             app_id="9a28e690-ad5d-4027-90b3-1da2b41cf4d1",
             user_id="plugin.plugin-iio:1.2.3",
         )
-        body = message.dump(message.Message(
+        body = wagglemsg.dump(wagglemsg.Message(
             timestamp=1360287003083988472,
             name="test",
             value=23.1,
@@ -98,7 +99,7 @@ class TestMain(unittest.TestCase):
             app_id="c3100d9b-2262-47ac-ab38-553862791174",
             user_id="plugin.plugin-imagesampler-0-2-1-abcef103",
         )
-        body = message.dump(message.Message(
+        body = wagglemsg.dump(wagglemsg.Message(
             timestamp=1360287003083988472,
             name="test",
             value=23.1,
@@ -124,7 +125,7 @@ class TestMain(unittest.TestCase):
             app_id="non-existant",
             user_id="plugin.plugin-metsense:1.2.3",
         )
-        body = message.dump(message.Message(
+        body = wagglemsg.dump(wagglemsg.Message(
             timestamp=1360287003083988472,
             name="test",
             value=23.1,
@@ -139,7 +140,7 @@ class TestMain(unittest.TestCase):
         properties = pika.BasicProperties(
             user_id="plugin.plugin-metsense:1.2.3",
         )
-        body = message.dump(message.Message(
+        body = wagglemsg.dump(wagglemsg.Message(
             timestamp=1360287003083988472,
             name="test",
             value=23.1,
@@ -155,7 +156,7 @@ class TestMain(unittest.TestCase):
             app_id="9a28e690-ad5d-4027-90b3-1da2b41cf4d1",
             user_id="plugin.plugin-metsense:1.2.3",
         )
-        body = message.dump(message.Message(
+        body = wagglemsg.dump(wagglemsg.Message(
             timestamp=1360287003083988472,
             name="upload",
             value=23.1,
@@ -173,7 +174,7 @@ class TestMain(unittest.TestCase):
             app_id="9a28e690-ad5d-4027-90b3-1da2b41cf4d1",
             user_id="plugin.plugin-metsense:1.2.3",
         )
-        body = message.dump(message.Message(
+        body = wagglemsg.dump(wagglemsg.Message(
             timestamp=1360287003083988472,
             name="upload",
             value=23.1,

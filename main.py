@@ -1,14 +1,11 @@
 import argparse
-import time
-import random
-import pika
 import json
-import os
 import logging
-import waggle.message as message
 import re
-import kubernetes
 from os import getenv
+import kubernetes
+import pika
+import wagglemsg
 
 
 class AppState:
@@ -52,7 +49,7 @@ def match_plugin_user_id(s):
 
 def load_message(appstate: AppState, properties: pika.BasicProperties, body: bytes):
     try:
-        msg = message.load(body)
+        msg = wagglemsg.load(body)
     except json.JSONDecodeError:
         raise InvalidMessageError(f"failed to parse message body {body}")
     except KeyError as key:
@@ -93,7 +90,7 @@ def load_message(appstate: AppState, properties: pika.BasicProperties, body: byt
         except KeyError:
             raise InvalidMessageError(f"upload messages must contain filename: {msg!r}")
         
-        msg = message.Message(
+        msg = wagglemsg.Message(
             timestamp=msg.timestamp,
             name=msg.name,
             meta=msg.meta, # load_message is still the sole owner so no need to copy
@@ -104,7 +101,7 @@ def load_message(appstate: AppState, properties: pika.BasicProperties, body: byt
 
 
 def publish_message(ch, scope, msg):
-    body = message.dump(msg)
+    body = wagglemsg.dump(msg)
 
     if scope not in {"node", "beehive", "all"}:
         raise InvalidMessageError(f"invalid message scope {scope!r}")
