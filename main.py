@@ -24,27 +24,44 @@ class InvalidMessageError(Exception):
         self.error = error
 
 
-user_id_pattern_v1 = re.compile(r"^plugin\.(\S+:\d+\.\d+\.\d+)$")
-user_id_pattern_v2 = re.compile(r"^plugin\.(\S+)-(\d+-\d+-\d+)-([0-9a-f]{8})$")
+user_id_prefix = re.compile("^plugin\.(.*)$")
+user_id_pattern_v1 = re.compile(r"^((\S+):\d+\.\d+\.\d+)$")
+user_id_pattern_v2 = re.compile(r"^(\S+)-(\d+-\d+-\d+)-([0-9a-f]{8})$")
 
 
-def match_plugin_user_id(s):
-    # type sanity check
+def match_plugin_user_id(s: str):
     if not isinstance(s, str):
-        return None
-    # match early user_id with no config / instance hash
+        return None, None
+    
+    # match and trim leading plugin. prefix
+    match = user_id_prefix.match(s)
+    if match is None:
+        return None, None
+    s = match.group(1)
+
+    # match early user_id with no config / instance hash (plugin.plugin-metsense:1.2.3)
     match = user_id_pattern_v1.match(s)
     if match is not None:
-        return match.group(1)
-    # match newer user_id which include config / instance hash
-    # TODO(sean) look at how to incorporate the hash / instance info into the data stream,
-    # if needed. using this directly in a meta field will blow up the data quite a lot and
-    # have no semantic meaning. *maybe* the user will add more meaningful meta tags like
-    # sensor or camera which will distinguish this enough.
+        return match.group(2), match.group(1)
+
+    # match newer user_id which include config / instance hash (plugin.plugin-raingauge-1-2-3-ae43fc12)
     match = user_id_pattern_v2.match(s)
     if match is not None:
-        return match.group(1) + ":" + match.group(2).replace("-", ".")
-    return None
+        return match.group(1), match.group(1) + ":" + match.group(2).replace("-", ".")
+
+    # if doesn't match any of the previous patterns return name as-is
+    return s, None
+
+
+def upload_url_for_message(msg: wagglemsg.Message) -> str:
+    try:
+        job = msg.meta["job"]
+        task = msg.meta["task"]
+        node = msg.meta["node"]
+        filename = msg.meta["filename"]
+    except KeyError as exc:
+        raise InvalidMessageError(f"message missing fields for upload url: {exc}")
+    return f"https://storage.sagecontinuum.org/api/v1/data/{job}/{task}/{node}/{msg.timestamp}-{filename}"
 
 
 def load_message(appstate: AppState, properties: pika.BasicProperties, body: bytes):
@@ -55,13 +72,16 @@ def load_message(appstate: AppState, properties: pika.BasicProperties, body: byt
     except KeyError as key:
         raise InvalidMessageError(f"message missing key {key}")
 
-    # add plugin metadata
-    plugin = match_plugin_user_id(properties.user_id)
-    if plugin is None:
-        raise InvalidMessageError(f"invalid message user_id {properties.user_id!r}")
-    msg.meta["plugin"] = plugin
+    # add scheduler metadata using user_id (deprecated, will remove)
+    task, plugin = match_plugin_user_id(properties.user_id)
+    if task is None:
+        raise InvalidMessageError(f"could not derive task name: user_id={properties.user_id}")
+    if plugin is not None:
+        msg.meta["plugin"] = plugin
 
-    # add scheduler metadata
+    # add scheduler metadata using pod uid
+    labels = {}
+
     if properties.app_id is not None:
         pod_uid = properties.app_id
         try:
@@ -69,33 +89,32 @@ def load_message(appstate: AppState, properties: pika.BasicProperties, body: byt
         except KeyError:
             raise InvalidMessageError(f"unable to find pod node name for {pod_uid}")
         msg.meta["host"] = pod.spec.node_name
-        msg.meta["job"] = pod.metadata.labels.get("sagecontinuum.org/plugin-job", "sage")
-        msg.meta["task"] = pod.metadata.labels.get("sagecontinuum.org/plugin-task", plugin.replace(":", "-"))
-        # TODO use pod image for this and include namespace?
-        # msg.meta["plugin"] = pod.spec.containers[0].image.split("/")[-1]
+        # TODO include namespace
+        msg.meta["plugin"] = pod.spec.containers[0].image.split("/")[-1]
+        labels = pod.metadata.labels
+
+    msg.meta["job"] = labels.get("sagecontinuum.org/plugin-job", "sage")
+    msg.meta["task"] = labels.get("sagecontinuum.org/plugin-task", task)
 
     # add node metadata
-    if appstate.node != "":
-        msg.meta["node"] = appstate.node
-    if appstate.vsn != "":
-        msg.meta["vsn"] = appstate.vsn
+    msg.meta["node"] = appstate.node
+    msg.meta["vsn"] = appstate.vsn
 
     # rewrite upload messages to use url
     if msg.name == "upload":
-        job = msg.meta["job"]
-        task = msg.meta["task"]
-        node = appstate.node
-        try:
-            filename = msg.meta["filename"]
-        except KeyError:
-            raise InvalidMessageError(f"upload messages must contain filename: {msg!r}")
-        
         msg = wagglemsg.Message(
             timestamp=msg.timestamp,
             name=msg.name,
             meta=msg.meta, # load_message is still the sole owner so no need to copy
-            value=f"https://storage.sagecontinuum.org/api/v1/data/{job}/{task}/{node}/{msg.timestamp}-{filename}"
+            value=upload_url_for_message(msg),
         )
+
+    if "job" not in msg.meta:
+        raise InvalidMessageError(f"could not infer message job: {msg!r}")
+    if "task" not in msg.meta:
+        raise InvalidMessageError(f"could not infer message task: {msg!r}")
+    if "plugin" not in msg.meta:
+        raise InvalidMessageError(f"could not infer message plugin: {msg!r}")
 
     return msg
 
@@ -178,8 +197,8 @@ def main():
     parser.add_argument("--rabbitmq-port", default=int(getenv("RABBITMQ_PORT", "5672")), type=int, help="rabbitmq port")
     parser.add_argument("--rabbitmq-username", default=getenv("RABBITMQ_USERNAME", "service"), help="rabbitmq username")
     parser.add_argument("--rabbitmq-password", default=getenv("RABBITMQ_PASSWORD", "service"), help="rabbitmq password")
-    parser.add_argument("--waggle-node-id", default=getenv("WAGGLE_NODE_ID", ""), help="waggle node id")
-    parser.add_argument("--waggle-node-vsn", default=getenv("WAGGLE_NODE_VSN", ""), help="waggle node vsn")
+    parser.add_argument("--waggle-node-id", default=getenv("WAGGLE_NODE_ID", "0000000000000000"), help="waggle node id")
+    parser.add_argument("--waggle-node-vsn", default=getenv("WAGGLE_NODE_VSN", "W000"), help="waggle node vsn")
     args = parser.parse_args()
 
     logging.basicConfig(

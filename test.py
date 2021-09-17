@@ -5,7 +5,9 @@ from waggle import message
 from kubernetes.client import V1Pod, V1PodSpec, V1ObjectMeta, V1Container
 from main import AppState, match_plugin_user_id, load_message, InvalidMessageError
 
-def get_test_appstate():
+
+def load_message_for_test_case(app_id=None, user_id=None, name="test", meta={}):
+    """compact way to specify our set of test cases"""
     podlist = [
         V1Pod(
             api_version="v1",
@@ -46,70 +48,64 @@ def get_test_appstate():
         )
     ]
 
-    return AppState(
+    appstate = AppState(
         node="111111222222333333",
         vsn="W123",
         pods={pod.metadata.uid: pod for pod in podlist},
-)
+    )
+
+    properties = pika.BasicProperties()
+    if app_id is not None:
+        properties.app_id = app_id
+    if user_id is not None:
+        properties.user_id = user_id
+
+    body = wagglemsg.dump(wagglemsg.Message(
+        timestamp=1360287003083988472,
+        name=name,
+        value=23.1,
+        meta=meta.copy()
+    ))
+
+    return load_message(appstate, properties, body)
 
 
 class TestMain(unittest.TestCase):
 
     def test_match_plugin_user_id(self):
         tests = [
-            ("plugin.plugin-metsense:1.2.3", "plugin-metsense:1.2.3"),
-            ("plugin.plugin-raingauge-1-2-3-ae43fc12", "plugin-raingauge:1.2.3"),
-            ("plugin.hello-world-4-0-2-aabbccdd", "hello-world:4.0.2"),
+            ("plugin.plugin-metsense:1.2.3", ("plugin-metsense", "plugin-metsense:1.2.3")),
+            ("plugin.plugin-raingauge-1-2-3-ae43fc12", ("plugin-raingauge", "plugin-raingauge:1.2.3")),
+            ("plugin.hello-world-4-0-2-aabbccdd", ("hello-world", "hello-world:4.0.2")),
+            ("plugin.iio-rpi", ("iio-rpi", None)),
+            ("plugin.nx-imagesampler", ("nx-imagesampler", None)),
         ]
 
         for user_id, want in tests:
             self.assertEqual(match_plugin_user_id(user_id), want)
 
     def test_load_message(self):
-        properties = pika.BasicProperties(
+        msg = load_message_for_test_case(
             app_id="9a28e690-ad5d-4027-90b3-1da2b41cf4d1",
-            user_id="plugin.plugin-iio:1.2.3",
+            user_id="plugin.plugin-iio:0.2.0",
+            meta={"sensor": "bme280"},
         )
-        body = wagglemsg.dump(wagglemsg.Message(
-            timestamp=1360287003083988472,
-            name="test",
-            value=23.1,
-            meta={
-                "sensor": "bme280",
-            }
-        ))
-
-        msg = load_message(get_test_appstate(), properties, body)
-
-        # TODO eventually the contract should be that plugin comes from the *image*. so, the test would be:
-        # plugin = waggle/plugin-iio:0.2.0
-        # but, for now, we'll maintain backwards compatibility.
         self.assertDictEqual(msg.meta, {
             "node": "111111222222333333",
             "vsn": "W123",
             "host": "rpi-node",
             "job": "sage",
-            "task": "plugin-iio-1.2.3",
+            "task": "plugin-iio",
             "sensor": "bme280",
-            "plugin": "plugin-iio:1.2.3",
+            "plugin": "plugin-iio:0.2.0",
         })
 
     def test_load_message_job_and_task(self):
-        properties = pika.BasicProperties(
+        msg = load_message_for_test_case(
             app_id="c3100d9b-2262-47ac-ab38-553862791174",
             user_id="plugin.plugin-imagesampler-0-2-1-abcef103",
+            meta={"camera": "bottom"},
         )
-        body = wagglemsg.dump(wagglemsg.Message(
-            timestamp=1360287003083988472,
-            name="test",
-            value=23.1,
-            meta={
-                "camera": "bottom",
-            }
-        ))
-
-        msg = load_message(get_test_appstate(), properties, body)
-
         self.assertDictEqual(msg.meta, {
             "node": "111111222222333333",
             "vsn": "W123",
@@ -121,70 +117,40 @@ class TestMain(unittest.TestCase):
         })
 
     def test_load_message_invalid_uid(self):
-        properties = pika.BasicProperties(
-            app_id="non-existant",
-            user_id="plugin.plugin-metsense:1.2.3",
-        )
-        body = wagglemsg.dump(wagglemsg.Message(
-            timestamp=1360287003083988472,
-            name="test",
-            value=23.1,
-            meta={
-                "camera": "left",
-            }
-        ))
         with self.assertRaises(InvalidMessageError):
-            load_message(get_test_appstate(), properties, body)
+            load_message_for_test_case(
+                app_id="non-existant",
+                user_id="plugin.plugin-imagesampler-0-2-1-abcef103",
+            )
 
     def test_load_message_backwards_compatible(self):
-        properties = pika.BasicProperties(
+        msg = load_message_for_test_case(
             user_id="plugin.plugin-metsense:1.2.3",
         )
-        body = wagglemsg.dump(wagglemsg.Message(
-            timestamp=1360287003083988472,
-            name="test",
-            value=23.1,
-            meta={
-                "camera": "left",
-            }
-        ))
-        msg = load_message(get_test_appstate(), properties, body)
         self.assertNotIn("host", msg.meta)
 
     def test_load_message_upload(self):
-        properties = pika.BasicProperties(
+        msg = load_message_for_test_case(
             app_id="9a28e690-ad5d-4027-90b3-1da2b41cf4d1",
             user_id="plugin.plugin-metsense:1.2.3",
-        )
-        body = wagglemsg.dump(wagglemsg.Message(
-            timestamp=1360287003083988472,
             name="upload",
-            value=23.1,
             meta={
                 "camera": "left",
                 "filename": "sample.jpg"
             }
-        ))
-
-        msg = load_message(get_test_appstate(), properties, body)
-        self.assertEqual(msg.value, "https://storage.sagecontinuum.org/api/v1/data/sage/plugin-metsense-1.2.3/111111222222333333/1360287003083988472-sample.jpg")
+        )
+        self.assertEqual(msg.value, "https://storage.sagecontinuum.org/api/v1/data/sage/plugin-metsense/111111222222333333/1360287003083988472-sample.jpg")
 
     def test_load_message_upload_raise_missing_filename(self):
-        properties = pika.BasicProperties(
-            app_id="9a28e690-ad5d-4027-90b3-1da2b41cf4d1",
-            user_id="plugin.plugin-metsense:1.2.3",
-        )
-        body = wagglemsg.dump(wagglemsg.Message(
-            timestamp=1360287003083988472,
-            name="upload",
-            value=23.1,
-            meta={
-                "camera": "left",
-            }
-        ))
-
         with self.assertRaises(InvalidMessageError):
-            load_message(get_test_appstate(), properties, body)
+            load_message_for_test_case(
+                app_id="9a28e690-ad5d-4027-90b3-1da2b41cf4d1",
+                user_id="plugin.plugin-metsense:1.2.3",
+                name="upload",
+                meta={
+                    "camera": "left",
+                }
+            )
 
 if __name__ == "__main__":
     unittest.main()
