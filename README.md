@@ -9,8 +9,8 @@ The data sharing service is what makes data available both to plugins on the nod
 ```txt
 ┌─────────┐
 │┌─────────┐       ┌──────────┐  Scope Fork   ┌───────────┐
-└│┌─────────┐ ───> │ Validate │ ──────┬─────> │ Serialize │ ───> To Beehive
- └│ Plugins │      │ Message  │       v       │ to Waggle │
+└│┌─────────┐ ───> │ Add Meta │ ──────┬─────> │ Serialize │ ───> To Beehive
+ └│ Plugins │      │ Validate │       v       │ to Waggle │
   └─────────┘      └──────────┘   To Plugins  └───────────┘
                         ^
                         | Load / cache plugin Pod
