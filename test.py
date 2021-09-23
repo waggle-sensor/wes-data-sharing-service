@@ -139,6 +139,7 @@ class TestMain(unittest.TestCase):
                 "filename": "sample.jpg"
             }
         )
+        self.assertEqual(msg.name, "dev.upload")
         self.assertEqual(msg.value, "https://storage.sagecontinuum.org/api/v1/data/sage/plugin-metsense/111111222222333333/1360287003083988472-sample.jpg")
 
     def test_load_message_upload_raise_missing_filename(self):

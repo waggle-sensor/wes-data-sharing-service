@@ -104,7 +104,7 @@ def load_message(appstate: AppState, properties: pika.BasicProperties, body: byt
     if msg.name == "upload":
         msg = wagglemsg.Message(
             timestamp=msg.timestamp,
-            name=msg.name,
+            name="dev.upload", # NOTE we're using dev.upload to develop this feature
             meta=msg.meta, # load_message is still the sole owner so no need to copy
             value=upload_url_for_message(msg),
         )
