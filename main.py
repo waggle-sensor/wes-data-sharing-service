@@ -59,9 +59,12 @@ def upload_url_for_message(msg: wagglemsg.Message) -> str:
         task = msg.meta["task"]
         node = msg.meta["node"]
         filename = msg.meta["filename"]
+        plugin = msg.meta["plugin"]
+        namespace = "sage"
+        version = plugin.split(":")[-1]
     except KeyError as exc:
         raise InvalidMessageError(f"message missing fields for upload url: {exc}")
-    return f"https://storage.sagecontinuum.org/api/v1/data/{job}/{task}/{node}/{msg.timestamp}-{filename}"
+    return f"https://storage.sagecontinuum.org/api/v1/data/{job}/{namespace}-{task}-{version}/{node}/{msg.timestamp}-{filename}"
 
 
 def load_message(appstate: AppState, properties: pika.BasicProperties, body: bytes):

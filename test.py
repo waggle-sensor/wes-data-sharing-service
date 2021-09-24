@@ -132,7 +132,7 @@ class TestMain(unittest.TestCase):
     def test_load_message_upload(self):
         msg = load_message_for_test_case(
             app_id="9a28e690-ad5d-4027-90b3-1da2b41cf4d1",
-            user_id="plugin.plugin-metsense:1.2.3",
+            user_id="plugin.plugin-iio:0.2.0",
             name="upload",
             meta={
                 "camera": "left",
@@ -140,7 +140,8 @@ class TestMain(unittest.TestCase):
             }
         )
         self.assertEqual(msg.name, "dev.upload")
-        self.assertEqual(msg.value, "https://storage.sagecontinuum.org/api/v1/data/sage/plugin-metsense/111111222222333333/1360287003083988472-sample.jpg")
+        # self.assertEqual(msg.value, "https://storage.sagecontinuum.org/api/v1/data/sage/plugin-metsense/111111222222333333/1360287003083988472-sample.jpg")
+        self.assertEqual(msg.value, "https://storage.sagecontinuum.org/api/v1/data/sage/sage-plugin-iio-0.2.0/111111222222333333/1360287003083988472-sample.jpg")
 
     def test_load_message_upload_raise_missing_filename(self):
         with self.assertRaises(InvalidMessageError):
