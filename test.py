@@ -6,8 +6,7 @@ from kubernetes.client import V1Pod, V1PodSpec, V1ObjectMeta, V1Container
 from main import AppState, match_plugin_user_id, load_message, InvalidMessageError
 
 
-def load_message_for_test_case(app_id=None, user_id=None, name="test", meta={}):
-    """compact way to specify our set of test cases"""
+def get_test_state():
     podlist = [
         V1Pod(
             api_version="v1",
@@ -48,11 +47,18 @@ def load_message_for_test_case(app_id=None, user_id=None, name="test", meta={}):
         )
     ]
 
-    appstate = AppState(
+    return AppState(
         node="111111222222333333",
         vsn="W123",
+        upload_publish_name="xxx.upload",
         pods={pod.metadata.uid: pod for pod in podlist},
     )
+
+
+def load_message_for_test_case(app_id=None, user_id=None, name="test", meta={}, appstate=None):
+    """compact way to specify our set of test cases"""
+    if appstate is None:
+        appstate = get_test_state()
 
     properties = pika.BasicProperties()
     if app_id is not None:
@@ -130,6 +136,8 @@ class TestMain(unittest.TestCase):
         self.assertNotIn("host", msg.meta)
 
     def test_load_message_upload(self):
+        appstate = get_test_state()
+
         msg = load_message_for_test_case(
             app_id="9a28e690-ad5d-4027-90b3-1da2b41cf4d1",
             user_id="plugin.plugin-iio:0.2.0",
@@ -137,10 +145,10 @@ class TestMain(unittest.TestCase):
             meta={
                 "camera": "left",
                 "filename": "sample.jpg"
-            }
+            },
+            appstate=appstate,
         )
-        self.assertEqual(msg.name, "dev.upload")
-        # self.assertEqual(msg.value, "https://storage.sagecontinuum.org/api/v1/data/sage/plugin-metsense/111111222222333333/1360287003083988472-sample.jpg")
+        self.assertEqual(msg.name, appstate.upload_publish_name)
         self.assertEqual(msg.value, "https://storage.sagecontinuum.org/api/v1/data/sage/sage-plugin-iio-0.2.0/111111222222333333/1360287003083988472-sample.jpg")
 
     def test_load_message_upload_raise_missing_filename(self):

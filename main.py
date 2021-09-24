@@ -11,9 +11,10 @@ import wagglemsg
 class AppState:
     """AppState encapsulates the config and state of this app. It's primarily used to store cached Pod info."""
 
-    def __init__(self, node, vsn, pods={}):
+    def __init__(self, node, vsn, upload_publish_name, pods={}):
         self.node = node
         self.vsn = vsn
+        self.upload_publish_name = upload_publish_name
         self.pods = pods
 
 
@@ -107,7 +108,7 @@ def load_message(appstate: AppState, properties: pika.BasicProperties, body: byt
     if msg.name == "upload":
         msg = wagglemsg.Message(
             timestamp=msg.timestamp,
-            name="dev.upload", # NOTE we're using dev.upload to develop this feature
+            name=appstate.upload_publish_name,
             meta=msg.meta, # load_message is still the sole owner so no need to copy
             value=upload_url_for_message(msg),
         )
@@ -195,6 +196,7 @@ def declare_exchange_with_queue(ch: pika.adapters.blocking_connection.BlockingCh
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", action="store_true", help="enable verbose logging")
+    parser.add_argument("--upload-publish-name", default=getenv("UPLOAD_PUBLISH_NAME", "upload"), help="measurement name to publish uploads to")
     parser.add_argument("--kubeconfig", default=None, help="kubernetes config")
     parser.add_argument("--rabbitmq-host", default=getenv("RABBITMQ_HOST", "rabbitmq-server"), help="rabbitmq host")
     parser.add_argument("--rabbitmq-port", default=int(getenv("RABBITMQ_PORT", "5672")), type=int, help="rabbitmq port")
@@ -239,8 +241,13 @@ def main():
     declare_exchange_with_queue(channel, "to-validator")
     declare_exchange_with_queue(channel, "to-beehive")
     
+    appstate = AppState(
+        node=args.waggle_node_id,
+        vsn=args.waggle_node_vsn,
+        upload_publish_name=args.upload_publish_name)
+
     logging.info("starting main process.")
-    appstate = AppState(node=args.waggle_node_id, vsn=args.waggle_node_vsn)
+    logging.info("will publish uploads under name %r.", appstate.upload_publish_name)
     channel.basic_consume("to-validator", create_on_validator_callback(appstate))
     channel.start_consuming()
 
