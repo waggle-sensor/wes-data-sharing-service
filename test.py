@@ -1,7 +1,6 @@
 import unittest
 import wagglemsg
 import pika
-from waggle import message
 from kubernetes.client import V1Pod, V1PodSpec, V1ObjectMeta, V1Container
 from main import AppState, load_message, InvalidMessageError
 
