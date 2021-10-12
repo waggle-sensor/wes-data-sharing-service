@@ -25,35 +25,6 @@ class InvalidMessageError(Exception):
         self.error = error
 
 
-user_id_prefix = re.compile("^plugin\.(.*)$")
-user_id_pattern_v1 = re.compile(r"^((\S+):\d+\.\d+\.\d+)$")
-user_id_pattern_v2 = re.compile(r"^(\S+)-(\d+-\d+-\d+)-([0-9a-f]{8})$")
-
-
-def match_plugin_user_id(s: str):
-    if not isinstance(s, str):
-        return None, None
-    
-    # match and trim leading plugin. prefix
-    match = user_id_prefix.match(s)
-    if match is None:
-        return None, None
-    s = match.group(1)
-
-    # match early user_id with no config / instance hash (plugin.plugin-metsense:1.2.3)
-    match = user_id_pattern_v1.match(s)
-    if match is not None:
-        return match.group(2), match.group(1)
-
-    # match newer user_id which include config / instance hash (plugin.plugin-raingauge-1-2-3-ae43fc12)
-    match = user_id_pattern_v2.match(s)
-    if match is not None:
-        return match.group(1), match.group(1) + ":" + match.group(2).replace("-", ".")
-
-    # if doesn't match any of the previous patterns return name as-is
-    return s, None
-
-
 def upload_url_for_message(msg: wagglemsg.Message) -> str:
     try:
         job = msg.meta["job"]
@@ -76,29 +47,24 @@ def load_message(appstate: AppState, properties: pika.BasicProperties, body: byt
     except KeyError as key:
         raise InvalidMessageError(f"message missing key {key}")
 
-    # add scheduler metadata using user_id (deprecated, will remove)
-    task, plugin = match_plugin_user_id(properties.user_id)
-    if task is None:
-        raise InvalidMessageError(f"could not derive task name: user_id={properties.user_id}")
-    if plugin is not None:
-        msg.meta["plugin"] = plugin
+    if properties.app_id is None:
+        raise InvalidMessageError("message missing pod uid")
+
+    try:
+        pod = appstate.pods[properties.app_id]
+    except KeyError as key:
+        raise InvalidMessageError(f"unable to find pod node with uid {key}")
 
     # add scheduler metadata using pod uid
-    labels = {}
+    msg.meta["host"] = pod.spec.node_name
+    # TODO include namespace
+    msg.meta["plugin"] = pod.spec.containers[0].image.split("/")[-1]
+    msg.meta["job"] = pod.metadata.labels.get("sagecontinuum.org/plugin-job", "sage")
 
-    if properties.app_id is not None:
-        pod_uid = properties.app_id
-        try:
-            pod = appstate.pods[pod_uid]
-        except KeyError:
-            raise InvalidMessageError(f"unable to find pod node name for {pod_uid}")
-        msg.meta["host"] = pod.spec.node_name
-        # TODO include namespace
-        msg.meta["plugin"] = pod.spec.containers[0].image.split("/")[-1]
-        labels = pod.metadata.labels
-
-    msg.meta["job"] = labels.get("sagecontinuum.org/plugin-job", "sage")
-    msg.meta["task"] = labels.get("sagecontinuum.org/plugin-task", task)
+    try:
+        msg.meta["task"] = pod.metadata.labels["sagecontinuum.org/plugin-task"]
+    except KeyError:
+        raise InvalidMessageError(f"pod doesn't contain a task label sagecontinuum.org/plugin-task")
 
     # add node metadata
     msg.meta["node"] = appstate.node
@@ -112,13 +78,6 @@ def load_message(appstate: AppState, properties: pika.BasicProperties, body: byt
             meta=msg.meta, # load_message is still the sole owner so no need to copy
             value=upload_url_for_message(msg),
         )
-
-    if "job" not in msg.meta:
-        raise InvalidMessageError(f"could not infer message job: {msg!r}")
-    if "task" not in msg.meta:
-        raise InvalidMessageError(f"could not infer message task: {msg!r}")
-    if "plugin" not in msg.meta:
-        raise InvalidMessageError(f"could not infer message plugin: {msg!r}")
 
     return msg
 
