@@ -123,7 +123,11 @@ def create_on_validator_callback(appstate):
         if properties.app_id is not None and properties.app_id not in appstate.pods:
             logging.info("got new pod uid %s. updating pod metadata...", properties.app_id)
             update_pod_node_names(appstate.pods)
-            logging.info("updated pod metadata")
+            try:
+                pod = appstate.pods[properties.app_id]
+                logging.info("updated pod metadata. new pod is %s", pod.metadata.name)
+            except KeyError:
+                logging.error("updated pod metadata. no pod for uid")
             # TODO think about sending info message indicating we have data from this Pod now.
             # this could be sent up to further bind metadata together on the cloud.
 
