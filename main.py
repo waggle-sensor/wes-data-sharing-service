@@ -1,7 +1,7 @@
 import argparse
 import json
 import logging
-import re
+import sys
 from os import getenv
 import kubernetes
 import pika
@@ -42,10 +42,8 @@ def upload_url_for_message(msg: wagglemsg.Message) -> str:
 def load_message(appstate: AppState, properties: pika.BasicProperties, body: bytes):
     try:
         msg = wagglemsg.load(body)
-    except json.JSONDecodeError:
-        raise InvalidMessageError(f"failed to parse message body {body}")
-    except KeyError as key:
-        raise InvalidMessageError(f"message missing key {key}")
+    except Exception:
+        raise InvalidMessageError(f"failed to parse message body {body!r}")
 
     if properties.app_id is None:
         raise InvalidMessageError("message missing pod uid")
@@ -53,7 +51,7 @@ def load_message(appstate: AppState, properties: pika.BasicProperties, body: byt
     try:
         pod = appstate.pods[properties.app_id]
     except KeyError as key:
-        raise InvalidMessageError(f"unable to find pod node with uid {key}")
+        raise InvalidMessageError(f"no pod with uid {key}")
 
     # add scheduler metadata using pod uid
     msg.meta["host"] = pod.spec.node_name
@@ -64,7 +62,7 @@ def load_message(appstate: AppState, properties: pika.BasicProperties, body: byt
     try:
         msg.meta["task"] = pod.metadata.labels["sagecontinuum.org/plugin-task"]
     except KeyError:
-        raise InvalidMessageError(f"pod doesn't contain a task label sagecontinuum.org/plugin-task")
+        raise InvalidMessageError(f"pod {pod.metadata.name} missing task label")
 
     # add node metadata
     msg.meta["node"] = appstate.node
@@ -118,30 +116,27 @@ def update_pod_node_names(pods: dict):
 
 def create_on_validator_callback(appstate):
     def on_validator_callback(ch, method, properties, body):
-        logging.debug("processing message.")
+        logging.debug("processing message")
 
         # update cached pod info when we receive an unknown pod UID
         # TODO think about rogue case where a made up UID is rapidly sent
         if properties.app_id is not None and properties.app_id not in appstate.pods:
             logging.info("got new pod uid %s. updating pod metadata...", properties.app_id)
             update_pod_node_names(appstate.pods)
-            logging.info("updated pod metadata.")
+            logging.info("updated pod metadata")
             # TODO think about sending info message indicating we have data from this Pod now.
             # this could be sent up to further bind metadata together on the cloud.
 
         try:
             msg = load_message(appstate, properties, body)
             publish_message(ch, method.routing_key, msg)
-        except InvalidMessageError:
-            # NOTE my assumption is that we generally should not have many invalid messages by
-            # the time we've deployed code to the edge, so we'd like to know as much as possible
-            # about them. we can dial this logging down if that turns out to be a bad assumption.
-            logging.exception("dropping invalid message.")
+        except InvalidMessageError as e:
+            logging.error("invalid message: %s", e)
             ch.basic_ack(method.delivery_tag)
             return
 
         ch.basic_ack(method.delivery_tag)
-        logging.debug("processed message.")
+        logging.debug("processed message")
 
     return on_validator_callback
 
@@ -211,4 +206,7 @@ def main():
     channel.start_consuming()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
