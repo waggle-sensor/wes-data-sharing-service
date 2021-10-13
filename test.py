@@ -11,10 +11,11 @@ def get_test_state():
             api_version="v1",
             kind="Pod",
             metadata=V1ObjectMeta(
+                name="plugin-iio-0-2-0-4c07bb56-12345678",
                 uid="9a28e690-ad5d-4027-90b3-1da2b41cf4d1",
                 labels={
                     "sagecontinuum.org/plugin-task": "iio-rpi",
-                }
+                },
             ),
             spec=V1PodSpec(
                 node_name="rpi-node",
@@ -30,6 +31,7 @@ def get_test_state():
             api_version="v1",
             kind="Pod",
             metadata=V1ObjectMeta(
+                name="plugin-image-sampler-0-2-1-0953bd15-d7947ddbd-89f2m",
                 uid="c3100d9b-2262-47ac-ab38-553862791174",
                 labels={
                     "sagecontinuum.org/plugin-job": "sampler-job",
