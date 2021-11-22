@@ -95,9 +95,13 @@ def publish_message(ch, scope, msg):
 
     if scope in {"beehive", "all"}:
         logging.debug("forwarding message type %r to beehive", msg.name)
+        # messages to beehive are always marked as persistent
+        properties = pika.BasicProperties(
+            delivery_mode=2)
         ch.basic_publish(
             exchange="to-beehive",
             routing_key=msg.name,
+            properties=properties,
             body=body)
 
 
