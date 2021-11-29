@@ -111,11 +111,18 @@ def publish_message(ch, scope, msg):
 # to it. (kubernetes is the only thing which *actually* knows where a Pod is assigned)
 def update_pod_node_names(pods: dict):
     """update_pod_node_names updates pods to the current {Pod UID: Pod Info} state."""
+    logging.info("updating pod table...")
     pods.clear()
     v1api = kubernetes.client.CoreV1Api()
     ret = v1api.list_namespaced_pod("default")
     for pod in ret.items:
+        # only include running Pods to ensure we have nodeName metadata
+        if pod.status.phase != "Running":
+            logging.info("skipping pod %s until running", pod.metadata.name)
+            continue
         pods[pod.metadata.uid] = pod
+        logging.info("adding pod %s", pod.metadata.name)
+    logging.info("updated pod table")
 
 
 def create_on_validator_callback(appstate):
@@ -125,13 +132,8 @@ def create_on_validator_callback(appstate):
         # update cached pod info when we receive an unknown pod UID
         # TODO think about rogue case where a made up UID is rapidly sent
         if properties.app_id is not None and properties.app_id not in appstate.pods:
-            logging.info("got new pod uid %s. updating pod metadata...", properties.app_id)
+            logging.info("got new pod uid %s", properties.app_id)
             update_pod_node_names(appstate.pods)
-            try:
-                pod = appstate.pods[properties.app_id]
-                logging.info("updated pod metadata. new pod is %s", pod.metadata.name)
-            except KeyError:
-                logging.error("updated pod metadata. no pod for uid")
             # TODO think about sending info message indicating we have data from this Pod now.
             # this could be sent up to further bind metadata together on the cloud.
 
