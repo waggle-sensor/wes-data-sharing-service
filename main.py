@@ -116,8 +116,8 @@ def update_pod_node_names(pods: dict):
     v1api = kubernetes.client.CoreV1Api()
     ret = v1api.list_namespaced_pod("default")
     for pod in ret.items:
-        # only include Pods which are running or succeeded so they have nodeName metadata
-        if pod.status.phase not in ["Running", "Succeeded"]:
+        # only pods which have been scheduled and have nodeName metadata
+        if not (isinstance(pod.spec.node_name, str) and pod.spec.node_name != ""):
             continue
         pods[pod.metadata.uid] = pod
         logging.info("adding pod %s", pod.metadata.name)
