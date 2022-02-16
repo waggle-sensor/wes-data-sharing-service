@@ -6,6 +6,7 @@ from os import getenv
 import kubernetes
 import pika
 import wagglemsg
+from pathlib import Path
 
 
 class AppState:
@@ -73,7 +74,7 @@ def load_message(appstate: AppState, properties: pika.BasicProperties, body: byt
         msg = wagglemsg.Message(
             timestamp=msg.timestamp,
             name=appstate.upload_publish_name,
-            meta=msg.meta, # load_message is still the sole owner so no need to copy
+            meta=msg.meta,  # load_message is still the sole owner so no need to copy
             value=upload_url_for_message(msg),
         )
 
@@ -88,21 +89,18 @@ def publish_message(ch, scope, msg):
 
     if scope in {"node", "all"}:
         logging.debug("forwarding message type %r to local", msg.name)
-        ch.basic_publish(
-            exchange="data.topic",
-            routing_key=msg.name,
-            body=body)
+        ch.basic_publish(exchange="data.topic", routing_key=msg.name, body=body)
 
     if scope in {"beehive", "all"}:
         logging.debug("forwarding message type %r to beehive", msg.name)
         # messages to beehive are always marked as persistent
-        properties = pika.BasicProperties(
-            delivery_mode=2)
+        properties = pika.BasicProperties(delivery_mode=2)
         ch.basic_publish(
             exchange="to-beehive",
             routing_key=msg.name,
             properties=properties,
-            body=body)
+            body=body,
+        )
 
 
 # NOTE update_pod_node_names introduces coupling between the data pipeline and
@@ -114,7 +112,7 @@ def update_pod_node_names(pods: dict):
     logging.info("updating pod table...")
     pods.clear()
     v1api = kubernetes.client.CoreV1Api()
-    ret = v1api.list_namespaced_pod("default")
+    ret = v1api.list_namespaced_pod("")
     for pod in ret.items:
         # only pods which have been scheduled and have nodeName metadata
         if not (isinstance(pod.spec.node_name, str) and pod.spec.node_name != ""):
@@ -150,38 +148,76 @@ def create_on_validator_callback(appstate):
     return on_validator_callback
 
 
-def declare_exchange_with_queue(ch: pika.adapters.blocking_connection.BlockingChannel, name: str):
-    ch.exchange_declare(name, exchange_type='fanout', durable=True)
+def declare_exchange_with_queue(
+    ch: pika.adapters.blocking_connection.BlockingChannel, name: str
+):
+    ch.exchange_declare(name, exchange_type="fanout", durable=True)
     ch.queue_declare(name, durable=True)
     ch.queue_bind(name, name)
+
+
+def load_kube_config(kubeconfig: str):
+    homeconfig = Path(Path.home(), ".kube/config").absolute()
+    if kubeconfig is not None:
+        kubernetes.config.load_kube_config(kubeconfig)
+    elif homeconfig.exists():
+        kubernetes.config.load_kube_config(str(homeconfig))
+    else:
+        kubernetes.config.load_incluster_config()
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", action="store_true", help="enable verbose logging")
-    parser.add_argument("--upload-publish-name", default=getenv("UPLOAD_PUBLISH_NAME", "upload"), help="measurement name to publish uploads to")
+    parser.add_argument(
+        "--upload-publish-name",
+        default=getenv("UPLOAD_PUBLISH_NAME", "upload"),
+        help="measurement name to publish uploads to",
+    )
     parser.add_argument("--kubeconfig", default=None, help="kubernetes config")
-    parser.add_argument("--rabbitmq-host", default=getenv("RABBITMQ_HOST", "rabbitmq-server"), help="rabbitmq host")
-    parser.add_argument("--rabbitmq-port", default=int(getenv("RABBITMQ_PORT", "5672")), type=int, help="rabbitmq port")
-    parser.add_argument("--rabbitmq-username", default=getenv("RABBITMQ_USERNAME", "service"), help="rabbitmq username")
-    parser.add_argument("--rabbitmq-password", default=getenv("RABBITMQ_PASSWORD", "service"), help="rabbitmq password")
-    parser.add_argument("--waggle-node-id", default=getenv("WAGGLE_NODE_ID", "0000000000000000"), help="waggle node id")
-    parser.add_argument("--waggle-node-vsn", default=getenv("WAGGLE_NODE_VSN", "W000"), help="waggle node vsn")
+    parser.add_argument(
+        "--rabbitmq-host",
+        default=getenv("RABBITMQ_HOST", "rabbitmq-server"),
+        help="rabbitmq host",
+    )
+    parser.add_argument(
+        "--rabbitmq-port",
+        default=int(getenv("RABBITMQ_PORT", "5672")),
+        type=int,
+        help="rabbitmq port",
+    )
+    parser.add_argument(
+        "--rabbitmq-username",
+        default=getenv("RABBITMQ_USERNAME", "service"),
+        help="rabbitmq username",
+    )
+    parser.add_argument(
+        "--rabbitmq-password",
+        default=getenv("RABBITMQ_PASSWORD", "service"),
+        help="rabbitmq password",
+    )
+    parser.add_argument(
+        "--waggle-node-id",
+        default=getenv("WAGGLE_NODE_ID", "0000000000000000"),
+        help="waggle node id",
+    )
+    parser.add_argument(
+        "--waggle-node-vsn",
+        default=getenv("WAGGLE_NODE_VSN", "W000"),
+        help="waggle node vsn",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
         format="%(asctime)s %(message)s",
-        datefmt="%Y/%m/%d %H:%M:%S")
+        datefmt="%Y/%m/%d %H:%M:%S",
+    )
     # pika logging is too verbose, so we turn it down.
     logging.getLogger("pika").setLevel(logging.CRITICAL)
 
-    # load incluster service account config
     # NOTE the service account needs read access to pod info
-    if args.kubeconfig is None:
-        kubernetes.config.load_incluster_config()
-    else:
-        kubernetes.config.load_kube_config(args.kubeconfig)
+    load_kube_config(args.kubeconfig)
 
     params = pika.ConnectionParameters(
         host=args.rabbitmq_host,
@@ -195,7 +231,12 @@ def main():
         retry_delay=10,
     )
 
-    logging.info("connecting to rabbitmq server at %s:%d as %s.", params.host, params.port, params.credentials.username)
+    logging.info(
+        "connecting to rabbitmq server at %s:%d as %s.",
+        params.host,
+        params.port,
+        params.credentials.username,
+    )
     connection = pika.BlockingConnection(params)
     channel = connection.channel()
 
@@ -203,16 +244,18 @@ def main():
     channel.exchange_declare("data.topic", exchange_type="topic", durable=True)
     declare_exchange_with_queue(channel, "to-validator")
     declare_exchange_with_queue(channel, "to-beehive")
-    
+
     appstate = AppState(
         node=args.waggle_node_id,
         vsn=args.waggle_node_vsn,
-        upload_publish_name=args.upload_publish_name)
+        upload_publish_name=args.upload_publish_name,
+    )
 
     logging.info("starting main process.")
     logging.info("will publish uploads under name %r.", appstate.upload_publish_name)
     channel.basic_consume("to-validator", create_on_validator_callback(appstate))
     channel.start_consuming()
+
 
 if __name__ == "__main__":
     try:
