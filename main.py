@@ -110,9 +110,9 @@ def publish_message(ch, scope, msg):
 def update_pod_node_names(pods: dict):
     """update_pod_node_names updates pods to the current {Pod UID: Pod Info} state."""
     logging.info("updating pod table...")
+    v1 = kubernetes.client.CoreV1Api()
+    ret = v1.list_pod_for_all_namespaces(watch=False)
     pods.clear()
-    v1api = kubernetes.client.CoreV1Api()
-    ret = v1api.list_namespaced_pod("")
     for pod in ret.items:
         # only pods which have been scheduled and have nodeName metadata
         if not (isinstance(pod.spec.node_name, str) and pod.spec.node_name != ""):
