@@ -118,7 +118,7 @@ def update_pod_node_names(pods: dict):
         if not (isinstance(pod.spec.node_name, str) and pod.spec.node_name != ""):
             continue
         pods[pod.metadata.uid] = pod
-        logging.info("adding pod %s", pod.metadata.name)
+        logging.info("adding pod: %s namespace: %s", pod.metadata.name, pod.metadata.namespace)
     logging.info("updated pod table")
 
 
