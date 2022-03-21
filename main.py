@@ -124,6 +124,8 @@ class PluginPodEventWatcher:
             self.events.put(pod)
 
 
+# TODO(sean) refactor and use a driver to test behavior on pod events and messages.
+
 class MessageHandler:
 
     def __init__(self, connection: pika.BlockingConnection, channel, appstate: AppState):
@@ -153,6 +155,7 @@ class MessageHandler:
             return
 
         self.load_and_publish_message(method, properties, body)
+        logging.debug("published message %d",  method.delivery_tag)
     
     def update_pod_events(self):
         self.connection.call_later(self.update_pod_events_interval, self.update_pod_events)
@@ -162,7 +165,7 @@ class MessageHandler:
                 pod = self.pod_event_watcher.events.get_nowait()
             except Empty:
                 break
-            logging.info("adding pod %s (%s)", pod.metadata.name, pod.metadata.uid)
+            logging.debug("received pod event %s (%s)", pod.metadata.name, pod.metadata.uid)
             self.appstate.pods[pod.metadata.uid] = pod
             self.flush_backlog_items_for_pod(pod.metadata.uid)
         # TODO(sean) cleanup pods
@@ -177,17 +180,15 @@ class MessageHandler:
             return
 
         self.channel.basic_ack(method.delivery_tag)
-        logging.debug("processed message %d",  method.delivery_tag)
 
     def flush_backlog_items_for_pod(self, pod_uid):
-        try:
-            messages = self.backlog[pod_uid]
-        except KeyError:
+        if pod_uid not in self.backlog:
             return
+        messages = self.backlog[pod_uid]
         for method, properties, body, _ in messages:
             self.load_and_publish_message(method, properties, body)
         pod = self.appstate.pods[pod_uid]
-        logging.info("flushed %d messages from backlog for %s (%s)", len(messages), pod.metadata.name, pod_uid)
+        logging.info("flushed %d messages from backlog for %s", len(messages), pod.metadata.name)
         del self.backlog[pod_uid]
 
     def prune_backlog_items(self):
