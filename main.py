@@ -1,4 +1,5 @@
 import argparse
+from email import message
 import json
 import logging
 import sys
@@ -7,6 +8,10 @@ import kubernetes
 import pika
 import wagglemsg
 from pathlib import Path
+import time
+from collections import defaultdict
+from queue import Queue, Empty
+from threading import Thread
 
 
 class AppState:
@@ -49,10 +54,7 @@ def load_message(appstate: AppState, properties: pika.BasicProperties, body: byt
     if properties.app_id is None:
         raise InvalidMessageError("message missing pod uid")
 
-    try:
-        pod = appstate.pods[properties.app_id]
-    except KeyError as key:
-        raise InvalidMessageError(f"no pod with uid {key}")
+    pod = appstate.pods[properties.app_id]
 
     # add scheduler metadata using pod uid
     msg.meta["host"] = pod.spec.node_name
@@ -103,54 +105,128 @@ def publish_message(ch, scope, msg):
         )
 
 
-# NOTE update_pod_node_names introduces coupling between the data pipeline and
-# kubernetes... however, conceptually we'll just coupling message data with scheduling
-# metadata. for now, that scheduler is kubernetes, which is why we're talking directly
-# to it. (kubernetes is the only thing which *actually* knows where a Pod is assigned)
-def update_pod_node_names(pods: dict):
-    """update_pod_node_names updates pods to the current {Pod UID: Pod Info} state."""
-    logging.info("updating pod table...")
-    v1 = kubernetes.client.CoreV1Api()
-    ret = v1.list_pod_for_all_namespaces(watch=False)
-    pods.clear()
-    for pod in ret.items:
-        # only pods which have been scheduled and have nodeName metadata
-        if not (isinstance(pod.spec.node_name, str) and pod.spec.node_name != ""):
-            continue
-        pods[pod.metadata.uid] = pod
-        logging.info("adding pod: %s namespace: %s", pod.metadata.name, pod.metadata.namespace)
-    logging.info("updated pod table")
+class PluginPodEventWatcher:
+
+    def __init__(self):
+        self.watch = kubernetes.watch.Watch()
+        self.events = Queue()
+        Thread(target=self.main, daemon=True).start()
+
+    def stop(self):
+        self.watch.stop()
+
+    def main(self):
+        v1 = kubernetes.client.CoreV1Api()
+        for event in self.watch.stream(v1.list_pod_for_all_namespaces, label_selector="sagecontinuum.org/plugin-task"):
+            pod = event["object"]
+            if pod.spec.node_name is None:
+                continue
+            self.events.put(pod)
 
 
-def create_on_validator_callback(appstate):
-    def on_validator_callback(ch, method, properties, body):
-        logging.debug("processing message")
+class MessageHandler:
 
-        # update cached pod info when we receive an unknown pod UID
-        # TODO think about rogue case where a made up UID is rapidly sent
-        if properties.app_id is not None and properties.app_id not in appstate.pods:
-            logging.info("got new pod uid %s", properties.app_id)
-            update_pod_node_names(appstate.pods)
-            # TODO think about sending info message indicating we have data from this Pod now.
-            # this could be sent up to further bind metadata together on the cloud.
+    def __init__(self, connection: pika.BlockingConnection, channel, appstate: AppState):
+        self.connection = connection
+        self.channel = channel
+        self.appstate = appstate
+        self.backlog = defaultdict(list)
+        self.prune_interval = 30.0
+        self.update_pod_events_interval = 1.0
+        self.pod_event_watcher = PluginPodEventWatcher()
+        self.connection.call_later(self.prune_interval, self.prune_backlog_items)
+        self.connection.call_later(self.update_pod_events_interval, self.update_pod_events)
 
-        try:
-            msg = load_message(appstate, properties, body)
-            publish_message(ch, method.routing_key, msg)
-        except InvalidMessageError as e:
-            logging.error("invalid message: %s", e)
+    def handle(self, ch, method, properties, body):
+        pod_uid = properties.app_id
+
+        if pod_uid is None:
+            logging.debug("dropping message without pod uid")
             ch.basic_ack(method.delivery_tag)
             return
 
-        ch.basic_ack(method.delivery_tag)
-        logging.debug("processed message")
+        # messages without a known pod uid will be added to a backlog to allow us
+        # to attempt to sync with pods from kubernetes
+        if pod_uid not in self.appstate.pods:
+            logging.debug("adding message %d to backlog", method.delivery_tag)
+            self.backlog[pod_uid].append((method, properties, body, time.monotonic()))
+            return
 
-    return on_validator_callback
+        self.load_and_publish_message(method, properties, body)
+    
+    def update_pod_events(self):
+        self.connection.call_later(self.update_pod_events_interval, self.update_pod_events)
+
+        while True:
+            try:
+                pod = self.pod_event_watcher.events.get_nowait()
+            except Empty:
+                break
+            logging.info("adding pod %s (%s)", pod.metadata.name, pod.metadata.uid)
+            self.appstate.pods[pod.metadata.uid] = pod
+            self.flush_backlog_items_for_pod(pod.metadata.uid)
+        # TODO(sean) cleanup pods
+
+    def load_and_publish_message(self, method, properties, body):
+        try:
+            msg = load_message(self.appstate, properties, body)
+            publish_message(self.channel, method.routing_key, msg)
+        except InvalidMessageError as e:
+            logging.error("invalid message: %s", e)
+            self.channel.basic_ack(method.delivery_tag)
+            return
+
+        self.channel.basic_ack(method.delivery_tag)
+        logging.debug("processed message %d",  method.delivery_tag)
+
+    def flush_backlog_items_for_pod(self, pod_uid):
+        try:
+            messages = self.backlog[pod_uid]
+        except KeyError:
+            return
+        for method, properties, body, _ in messages:
+            self.load_and_publish_message(method, properties, body)
+        pod = self.appstate.pods[pod_uid]
+        logging.info("flushed %d messages from backlog for %s (%s)", len(messages), pod.metadata.name, pod_uid)
+        del self.backlog[pod_uid]
+
+    def prune_backlog_items(self):
+        self.connection.call_later(self.prune_interval, self.prune_backlog_items)
+
+        if len(self.backlog) == 0:
+            logging.info("backlog is empty - skipping prune.")
+            return
+
+        logging.info("pruning backlog")
+
+        # NOTE we run this infrequently (~10s), so we will just rebuild the entire data structure each time.
+        now = time.monotonic()
+
+        pruned_backlog = defaultdict(list)
+
+        for pod_uid, messages in self.backlog.items():
+            for method, properties, body, recv_time in messages:
+                # keep fresh items
+                if now - recv_time < 30.0:
+                    pruned_backlog[pod_uid].append((method, properties, body, recv_time))
+                    continue
+                # expire stale items
+                logging.debug("expire message %d", method.delivery_tag)
+                self.channel.basic_ack(method.delivery_tag)
+
+        log_backlog_size_change(backlog_size(self.backlog), backlog_size(pruned_backlog))
+        self.backlog = pruned_backlog
 
 
-def declare_exchange_with_queue(
-    ch: pika.adapters.blocking_connection.BlockingChannel, name: str
-):
+def backlog_size(backlog):
+    return sum(map(len, backlog.values()))
+
+
+def log_backlog_size_change(old_size, new_size):
+    logging.info("pruned %d of %d items from backlog", old_size - new_size, old_size)
+
+
+def declare_exchange_with_queue(ch: pika.adapters.blocking_connection.BlockingChannel, name: str):
     ch.exchange_declare(name, exchange_type="fanout", durable=True)
     ch.queue_declare(name, durable=True)
     ch.queue_bind(name, name)
@@ -213,7 +289,8 @@ def main():
         format="%(asctime)s %(message)s",
         datefmt="%Y/%m/%d %H:%M:%S",
     )
-    # pika logging is too verbose, so we turn it down.
+    # turn down the super verbose library level logging
+    logging.getLogger("kubernetes").setLevel(logging.CRITICAL)
     logging.getLogger("pika").setLevel(logging.CRITICAL)
 
     # NOTE the service account needs read access to pod info
@@ -245,15 +322,19 @@ def main():
     declare_exchange_with_queue(channel, "to-validator")
     declare_exchange_with_queue(channel, "to-beehive")
 
-    appstate = AppState(
-        node=args.waggle_node_id,
-        vsn=args.waggle_node_vsn,
-        upload_publish_name=args.upload_publish_name,
+    handler = MessageHandler(
+        connection=connection,
+        channel=channel,
+        appstate=AppState(
+            node=args.waggle_node_id,
+            vsn=args.waggle_node_vsn,
+            upload_publish_name=args.upload_publish_name,
+        ),
     )
 
     logging.info("starting main process.")
-    logging.info("will publish uploads under name %r.", appstate.upload_publish_name)
-    channel.basic_consume("to-validator", create_on_validator_callback(appstate))
+    logging.info("will publish uploads under name %r.", args.upload_publish_name)
+    channel.basic_consume("to-validator", handler.handle)
     channel.start_consuming()
 
 
