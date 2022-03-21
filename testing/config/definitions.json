@@ -6,6 +6,11 @@
                 "tags": "administrator,impersonator"
             },
             {
+                "name":"plugin",
+                "password":"plugin",
+                "tags": ""
+            },
+            {
                 "name":"node-0000000000000001",
                 "password":"waggle",
                 "tags": ""
@@ -25,6 +30,13 @@
                 "read": ".*"
             },
             {
+                "user": "plugin",
+                "vhost": "/",
+                "configure": ".*",
+                "write": ".*",
+                "read": ".*"
+            },
+            {
                 "user": "node-0000000000000001",
                 "vhost": "/",
                 "configure": ".*",
@@ -35,7 +47,22 @@
         "topic_permissions": [],
         "parameters": [],
         "policies": [],
-        "queues": [],
+        "queues": [
+            {
+                "name": "to-validator",
+                "vhost": "/",
+                "durable": true,
+                "auto_delete": false,
+                "arguments": {}
+            },
+            {
+                "name": "to-beehive",
+                "vhost": "/",
+                "durable": true,
+                "auto_delete": false,
+                "arguments": {}
+            }
+        ],
         "exchanges": [
             {
                 "name": "waggle.msg",
@@ -47,5 +74,14 @@
                 "arguments": {}
             }
         ],
-        "bindings": []
+        "bindings": [
+            {
+                "source": "waggle.msg",
+                "vhost": "/",
+                "destination": "to-validator",
+                "destination_type": "queue",
+                "routing_key": "#",
+                "arguments": {}
+            }
+        ]
     }

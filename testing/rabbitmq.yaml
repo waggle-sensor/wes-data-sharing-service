@@ -1,11 +1,11 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: rabbitmq
+  name: wes-rabbitmq
 spec:
   type: LoadBalancer
   selector:
-    app: rabbitmq
+    app: wes-rabbitmq
   ports:
     - name: amqp
       port: 5672
@@ -17,18 +17,18 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: rabbitmq
+  name: wes-rabbitmq
 spec:
   selector:
     matchLabels:
-      app: rabbitmq
+      app: wes-rabbitmq
   template:
     metadata:
       labels:
-        app: rabbitmq
+        app: wes-rabbitmq
     spec:
       containers:
-        - name: rabbitmq
+        - name: wes-rabbitmq
           image: rabbitmq:3.8.11-management
           ports:
             - name: amqp
