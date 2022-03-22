@@ -27,6 +27,12 @@ class InvalidMessageError(Exception):
         self.error = error
 
 
+class MonotonicClock:
+
+    def now(self):
+        return time.monotonic()
+
+
 @dataclass
 class PodState:
 
@@ -50,12 +56,13 @@ class MessageHandler:
     # TODO(sean) refactor and use a driver to test behavior on pod events and messages.
 
     def __init__(self, config: MessageHandlerConfig, connection: pika.BlockingConnection, channel: pika.adapters.blocking_connection.BlockingChannel,
-        pod_event_watcher: PluginPodEventWatcher):
+        pod_event_watcher: PluginPodEventWatcher, clock=MonotonicClock()):
         self.config = config
         self.connection = connection
         self.channel = channel
         self.pod_event_watcher = pod_event_watcher
         self.pod_state = {}
+        self.clock = clock
         self.call_every(config.update_pod_events_interval, self.update_pod_events)
         self.call_every(config.update_pod_state_interval, self.update_pod_state)
 
@@ -65,7 +72,7 @@ class MessageHandler:
             self.connection.call_later(interval, func_every)
         self.connection.call_later(interval, func_every)
 
-    def handle(self, delivery: amqp.Delivery):
+    def handle_delivery(self, delivery: amqp.Delivery):
         wes_data_service_messages_handled_total.inc()
 
         logging.debug("handling delivery...")
@@ -80,42 +87,45 @@ class MessageHandler:
         # add placeholder for pod state for unknown pod uid
         if pod_uid not in self.pod_state:
             logging.debug("adding pod state placeholder for %s", pod_uid)
-            self.pod_state[pod_uid] = PodState(pod=None, backlog=[], updated_at=time.monotonic())
+            self.pod_state[pod_uid] = PodState(pod=None, backlog=[], updated_at=self.clock.now())
         
         # add messages to backlog for unknown pod
         if self.pod_state[pod_uid].pod is None:
-            wes_data_service_messages_backlog_total.inc()
+            wes_data_service_messages_backlogged_total.inc()
             logging.debug("adding delivery %s to backlog for %s", delivery, pod_uid)
             pod_state = self.pod_state[pod_uid]
             pod_state.backlog.append(delivery)
-            pod_state.updated_at = time.monotonic()
+            pod_state.updated_at = self.clock.now()
             return
 
         # handle delivery right away for known pod
-        self.pod_state[pod_uid].updated_at = time.monotonic()
+        self.pod_state[pod_uid].updated_at = self.clock.now()
         self.load_and_publish_message(delivery)
+
+    def handle_pod_event(self, pod):
+        pod_uid = pod.metadata.uid
+        logging.debug("received pod event %s (%s)", pod.metadata.name, pod.metadata.uid)
+
+        if pod_uid not in self.pod_state:
+            logging.debug("added pod state for %s (%s)", pod_uid, pod.metadata.name)
+            self.pod_state[pod_uid] = PodState(pod=pod, backlog=[], updated_at=self.clock.now())
+        else:
+            logging.debug("updated placeholder for %s (%s)", pod_uid, pod.metadata.name)
+            pod_state = self.pod_state[pod_uid]
+            pod_state.pod = pod
+            pod_state.updated_at = self.clock.now()
+
+        self.flush_pod_backlog(pod_uid)
 
     def update_pod_events(self):
         logging.debug("updating pod events...")
 
-        # TODO(sean) think about the right kind of failure mode when the pod event watcher stops.
         if self.pod_event_watcher.is_stopped():
             raise RuntimeError("pod event watcher has stopped")
 
         for pod in self.pod_event_watcher.ready_events():
-            pod_uid = pod.metadata.uid
-            logging.debug("received pod event %s (%s)", pod.metadata.name, pod_uid)
+            self.handle_pod_event(pod)
 
-            if pod_uid not in self.pod_state:
-                logging.debug("added pod state for %s (%s)", pod_uid, pod.metadata.name)
-                self.pod_state[pod_uid] = PodState(pod=pod, backlog=[], updated_at=time.monotonic())
-            else:
-                logging.debug("updated placeholder for %s (%s)", pod_uid, pod.metadata.name)
-                pod_state = self.pod_state[pod_uid]
-                pod_state.pod = pod
-                pod_state.updated_at = time.monotonic()
-
-            self.flush_pod_backlog(pod_uid)
         logging.debug("updated pod events")
 
     def update_pod_state(self):
@@ -124,7 +134,7 @@ class MessageHandler:
             pod_state = self.pod_state[pod_uid]
             self.flush_pod_backlog(pod_uid)
 
-            if time.monotonic() - pod_state.updated_at < self.config.pod_state_expire_duration:
+            if self.clock.now() - pod_state.updated_at < self.config.pod_state_expire_duration:
                 continue
             
             logging.debug("expiring pod state for %s", pod_uid)
@@ -362,7 +372,7 @@ def main():
 
     logging.info("starting main process.")
     logging.info("will publish uploads under name %r", args.upload_publish_name)
-    amqp.consume(channel, "to-validator", handler.handle)
+    amqp.consume(channel, "to-validator", handler.handle_delivery)
     channel.start_consuming()
 
 

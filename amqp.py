@@ -4,9 +4,9 @@ from dataclasses import dataclass
 
 @dataclass
 class Delivery:
-    
+
     channel: pika.adapters.blocking_connection.BlockingChannel
-    method: object
+    method: pika.spec.Basic.Deliver
     properties: pika.BasicProperties
     body: bytes
 
