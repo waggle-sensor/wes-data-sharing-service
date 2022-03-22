@@ -123,9 +123,9 @@ class TestMain(unittest.TestCase):
                 "user-defined3": "value3",
             })
 
-    def test_load_message_nonexistant_uid(self):
-        with self.assertRaises(InvalidMessageError):
-            load_message_for_test_case(app_id="non-existant")
+    # def test_load_message_nonexistant_uid(self):
+    #     with self.assertRaises(InvalidMessageError):
+    #         load_message_for_test_case(app_id="non-existant")
 
     def test_load_message_upload(self):
         appstate = get_test_state()
