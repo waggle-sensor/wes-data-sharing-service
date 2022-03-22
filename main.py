@@ -12,12 +12,13 @@ from pod_event_watcher import PluginPodEventWatcher
 import amqp
 from prometheus_client import start_http_server, Counter
 
+
 wes_data_service_messages_handled_total = Counter("wes_data_service_messages_handled_total", "Total number of messages handled.")
 wes_data_service_messages_invalid_total = Counter("wes_data_service_messages_invalid_total", "Total number of invalid messages.")
 wes_data_service_messages_backlog_total = Counter("wes_data_service_messages_backlog_total", "Total number of messages backlogged.")
 wes_data_service_messages_published_total = Counter("wes_data_service_messages_published_total", "Total number of messages published.")
 wes_data_service_messages_expired_total = Counter("wes_data_service_messages_expired_total", "Total number of messages expired.")
-# wes_data_service_messages_in_backlog = Counter("wes_data_service_messages_in_backlog", "Total number of messages in backlog.")
+
 
 class InvalidMessageError(Exception):
     """InvalidMessageError is throw to indicate that a message is invalid. (Bad JSON data, missing fields, etc.)"""
