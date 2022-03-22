@@ -10,7 +10,14 @@ import time
 from dataclasses import dataclass
 from pod_event_watcher import PluginPodEventWatcher
 import amqp
+from prometheus_client import start_http_server, Counter
 
+wes_data_service_messages_handled_total = Counter("wes_data_service_messages_handled_total", "Total number of messages handled.")
+wes_data_service_messages_invalid_total = Counter("wes_data_service_messages_invalid_total", "Total number of invalid messages.")
+wes_data_service_messages_backlog_total = Counter("wes_data_service_messages_backlog_total", "Total number of messages backlogged.")
+wes_data_service_messages_published_total = Counter("wes_data_service_messages_published_total", "Total number of messages published.")
+wes_data_service_messages_expired_total = Counter("wes_data_service_messages_expired_total", "Total number of messages expired.")
+# wes_data_service_messages_in_backlog = Counter("wes_data_service_messages_in_backlog", "Total number of messages in backlog.")
 
 class InvalidMessageError(Exception):
     """InvalidMessageError is throw to indicate that a message is invalid. (Bad JSON data, missing fields, etc.)"""
@@ -32,7 +39,7 @@ class MessageHandlerConfig:
     node: str
     vsn: str
     upload_publish_name: str
-    update_pod_events_interval: float = 3.0
+    update_pod_events_interval: float = 1.0
     update_pod_state_interval: float = 10.0
     pod_state_expire_duration: float = 30.0
 
@@ -58,10 +65,13 @@ class MessageHandler:
         self.connection.call_later(interval, func_every)
 
     def handle(self, delivery: amqp.Delivery):
+        wes_data_service_messages_handled_total.inc()
+
         logging.debug("handling delivery...")
         pod_uid = delivery.properties.app_id
         
         if pod_uid is None:
+            wes_data_service_messages_invalid_total.inc()
             logging.debug("dropping message without pod uid")
             delivery.ack()
             return
@@ -73,6 +83,7 @@ class MessageHandler:
         
         # add messages to backlog for unknown pod
         if self.pod_state[pod_uid].pod is None:
+            wes_data_service_messages_backlog_total.inc()
             logging.debug("adding delivery %s to backlog for %s", delivery, pod_uid)
             pod_state = self.pod_state[pod_uid]
             pod_state.backlog.append(delivery)
@@ -111,12 +122,17 @@ class MessageHandler:
         for pod_uid in list(self.pod_state.keys()):
             pod_state = self.pod_state[pod_uid]
             self.flush_pod_backlog(pod_uid)
+
             if time.monotonic() - pod_state.updated_at < self.config.pod_state_expire_duration:
                 continue
+            
             logging.debug("expiring pod state for %s", pod_uid)
             for delivery in pod_state.backlog:
                 delivery.ack()
+                wes_data_service_messages_expired_total.inc()
+
             del self.pod_state[pod_uid]
+
         logging.debug("updated pod state")
 
     def flush_pod_backlog(self, pod_uid):
@@ -135,11 +151,14 @@ class MessageHandler:
             msg = self.load_message(delivery)
             self.publish_message(delivery.method.routing_key, msg)
         except InvalidMessageError as e:
-            logging.error("invalid message: %s", e)
             delivery.ack()
+            logging.error("invalid message: %s", e)
+            wes_data_service_messages_invalid_total.inc()
             return
+
         delivery.ack()
         logging.debug("published message %s",  delivery)
+        wes_data_service_messages_published_total.inc()
 
     def load_message(self, delivery: amqp.Delivery):
         try:
@@ -278,6 +297,12 @@ def main():
         default=getenv("WAGGLE_NODE_VSN", "W000"),
         help="waggle node vsn",
     )
+    parser.add_argument(
+        "--metrics-port",
+        default=getenv("METRICS_PORT", "8080"),
+        type=int,
+        help="metrics server port",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -319,6 +344,9 @@ def main():
     declare_exchange_with_queue(channel, "to-beehive")
 
     pod_event_watcher = PluginPodEventWatcher()
+
+    # start metrics server
+    start_http_server(args.metrics_port)
 
     handler = MessageHandler(
         config=MessageHandlerConfig(
