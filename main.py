@@ -219,7 +219,7 @@ def convert_to_upload_message(msg: wagglemsg.Message, config: MessageHandlerConf
     return wagglemsg.Message(
         timestamp=msg.timestamp,
         name=config.upload_publish_name,
-        meta=msg.meta,  # load_message is still the sole owner so no need to copy
+        meta=msg.meta,  # TODO(sean) be careful on ownership here, in case this is mutated
         value=upload_url_for_message(msg),
     )
 
