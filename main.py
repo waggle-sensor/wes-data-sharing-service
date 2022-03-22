@@ -15,7 +15,7 @@ from prometheus_client import start_http_server, Counter
 
 wes_data_service_messages_handled_total = Counter("wes_data_service_messages_handled_total", "Total number of messages handled.")
 wes_data_service_messages_invalid_total = Counter("wes_data_service_messages_invalid_total", "Total number of invalid messages.")
-wes_data_service_messages_backlog_total = Counter("wes_data_service_messages_backlog_total", "Total number of messages backlogged.")
+wes_data_service_messages_backlogged_total = Counter("wes_data_service_messages_backlogged_total", "Total number of messages which have been backlogged.")
 wes_data_service_messages_published_total = Counter("wes_data_service_messages_published_total", "Total number of messages published.")
 wes_data_service_messages_expired_total = Counter("wes_data_service_messages_expired_total", "Total number of messages expired.")
 
