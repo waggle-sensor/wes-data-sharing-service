@@ -6,41 +6,10 @@ import pika
 import wagglemsg
 from pathlib import Path
 import time
-from queue import Queue, Empty
-from threading import Thread
 import time
 from dataclasses import dataclass
-
-
-class PluginPodEventWatcher:
-
-    def __init__(self):
-        self.watch = kubernetes.watch.Watch()
-        self.events = Queue()
-        Thread(target=self.main, daemon=True).start()
-
-    def stop(self):
-        self.watch.stop()
-
-    def main(self):
-        while True:
-            self.watch_events()
-            time.sleep(1)
-
-    def watch_events(self):
-        v1 = kubernetes.client.CoreV1Api()
-        for event in self.watch.stream(v1.list_pod_for_all_namespaces, label_selector="sagecontinuum.org/plugin-task"):
-            pod = event["object"]
-            if pod.spec.node_name is None:
-                continue
-            self.events.put(pod)
-
-    def ready_events(self):
-        while True:
-            try:
-                yield self.events.get_nowait()
-            except Empty:
-                break
+from pod_event_watcher import PluginPodEventWatcher
+import amqp
 
 
 class InvalidMessageError(Exception):
@@ -48,29 +17,6 @@ class InvalidMessageError(Exception):
 
     def __init__(self, error):
         self.error = error
-
-
-@dataclass
-class AMQPDelivery:
-    
-    channel: pika.adapters.blocking_connection.BlockingChannel
-    method: object
-    properties: pika.BasicProperties
-    body: bytes
-
-    # TODO(sean) we could make this threadsafe using the connection callback
-
-    def ack(self):
-        self.channel.basic_ack(self.method.delivery_tag)
-
-    def nack(self):
-        self.channel.basic_nack(self.method.delivery_tag)
-
-    def reject(self):
-        self.channel.basic_reject(self.method.delivery_tag)
-
-    def __str__(self):
-        return str(self.method.delivery_tag)
 
 
 @dataclass
@@ -111,15 +57,7 @@ class MessageHandler:
             self.connection.call_later(interval, func_every)
         self.connection.call_later(interval, func_every)
 
-    def handle(self, channel, method, properties, body):
-        self.handle_delivery(AMQPDelivery(
-            channel=channel,
-            method=method,
-            properties=properties,
-            body=body,
-        ))
-
-    def handle_delivery(self, delivery: AMQPDelivery):
+    def handle(self, delivery: amqp.Delivery):
         logging.debug("handling delivery...")
         pod_uid = delivery.properties.app_id
         
@@ -147,6 +85,11 @@ class MessageHandler:
 
     def update_pod_events(self):
         logging.debug("updating pod events...")
+
+        # TODO(sean) think about the right kind of failure mode when the pod event watcher stops.
+        if self.pod_event_watcher.is_stopped():
+            raise RuntimeError("pod event watcher has stopped")
+
         for pod in self.pod_event_watcher.ready_events():
             pod_uid = pod.metadata.uid
             logging.debug("received pod event %s (%s)", pod.metadata.name, pod_uid)
@@ -186,7 +129,7 @@ class MessageHandler:
         pod_state.backlog.clear()
         logging.debug("flushed pod backlog")
 
-    def load_and_publish_message(self, delivery: AMQPDelivery):
+    def load_and_publish_message(self, delivery: amqp.Delivery):
         logging.debug("publishing message %s...",  delivery)
         try:
             msg = self.load_message(delivery)
@@ -198,7 +141,7 @@ class MessageHandler:
         delivery.ack()
         logging.debug("published message %s",  delivery)
 
-    def load_message(self, delivery: AMQPDelivery):
+    def load_message(self, delivery: amqp.Delivery):
         try:
             msg = wagglemsg.load(delivery.body)
         except Exception:
@@ -389,8 +332,8 @@ def main():
     )
 
     logging.info("starting main process.")
-    logging.info("will publish uploads under name %r.", args.upload_publish_name)
-    channel.basic_consume("to-validator", handler.handle)
+    logging.info("will publish uploads under name %r", args.upload_publish_name)
+    amqp.consume(channel, "to-validator", handler.handle)
     channel.start_consuming()
 
 
