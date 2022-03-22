@@ -1,6 +1,10 @@
 import kubernetes
 from queue import Queue, Empty
 from threading import Thread, Event
+from prometheus_client import Counter
+
+
+wes_data_service_pod_events_total = Counter("wes_data_service_pod_events_total", "Total number of pod events received.")
 
 
 class PluginPodEventWatcher:
@@ -31,6 +35,7 @@ class PluginPodEventWatcher:
             if pod.spec.node_name is None:
                 continue
             self.events.put(pod)
+            wes_data_service_pod_events_total.inc()
 
     def ready_events(self):
         while True:
