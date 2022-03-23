@@ -75,7 +75,8 @@ class MessageHandler:
         if pod_state.pod is None:
             self.logger.debug("adding delivery %s to backlog for %s", delivery, delivery.pod_uid)
             wes_data_service_messages_backlogged_total.inc()
-            self.append_to_pod_state_backlog(self.pod_state[delivery.pod_uid], delivery)
+            pod_state.updated_at = self.clock.now()
+            pod_state.backlog.append(delivery)
         else:
             self.load_and_publish_message(delivery)
             pod_state.updated_at = self.clock.now()
@@ -160,10 +161,6 @@ class MessageHandler:
 
     def new_pod_state(self):
         return PodState(pod=None, backlog=[], updated_at=self.clock.now())
- 
-    def append_to_pod_state_backlog(self, pod_state, delivery):
-        pod_state.updated_at = self.clock.now()
-        pod_state.backlog.append(delivery)
 
 
 class Publisher:

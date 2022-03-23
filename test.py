@@ -156,6 +156,10 @@ class TestMessageHandler(unittest.TestCase):
         delivery.ack = MagicMock()
 
         handler.handle_delivery(delivery)
+
+        handler.clock.time += handler.config.pod_state_expire_duration*0.80
+        handler.handle_expired_pods()
+
         handler.handle_pod(pod)
 
         self.assert_published(handler.publisher, ["data.topic", "to-beehive"], wagglemsg.Message(
@@ -173,7 +177,7 @@ class TestMessageHandler(unittest.TestCase):
         ))
         delivery.ack.assert_called_once()
     
-    def test_expire(self):
+    def test_handle_expired_pods(self):
         handler = make_test_handler()
         handler.publisher.publish = MagicMock()
 
@@ -200,7 +204,7 @@ class TestMessageHandler(unittest.TestCase):
 
         for delivery in deliveries:
             delivery.ack.assert_not_called()
-        
+
         handler.clock.time += handler.config.pod_state_expire_duration*0.90
         handler.handle_expired_pods()
         for delivery in deliveries:
