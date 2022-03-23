@@ -1,165 +1,140 @@
 import unittest
+from unittest.mock import MagicMock
+from main import MessageHandler, MessageHandlerConfig, Publisher
+from amqp import Delivery, Publishing
+from pod_event_watcher import Pod
 import wagglemsg
-import pika
-from kubernetes.client import V1Pod, V1PodSpec, V1ObjectMeta, V1Container
-from main import AppState, load_message, InvalidMessageError
 
 
-def get_test_state():
-    podlist = [
-        V1Pod(
-            api_version="v1",
-            kind="Pod",
-            metadata=V1ObjectMeta(
-                name="plugin-iio-0-2-0-4c07bb56-12345678",
-                uid="9a28e690-ad5d-4027-90b3-1da2b41cf4d1",
-                labels={
-                    "sagecontinuum.org/plugin-task": "iio-rpi",
-                },
+class TestMessageHandler(unittest.TestCase):
+
+    def test_missing_uid(self):
+        handler = MessageHandler(
+            config=MessageHandlerConfig(
+                node="0000000000000001",
+                vsn="W001",
+                upload_publish_name="upload",
             ),
-            spec=V1PodSpec(
-                node_name="rpi-node",
-                containers=[
-                    V1Container(
-                        name="plugin-iio-0-2-0-4c07bb56",
-                        image="waggle/plugin-iio:0.2.0",
-                    )
-                ],
+            publisher=None,
+        )
+        delivery = Delivery(pod_uid=None)
+        delivery.ack = MagicMock()
+        handler.handle_delivery(delivery)
+
+        delivery.ack.assert_called_once()
+    
+    def test_expect_task_label(self):
+        publisher = Publisher(channel=None)
+        publisher.publish = MagicMock()
+
+        handler = MessageHandler(
+            config=MessageHandlerConfig(
+                node="0000000000000001",
+                vsn="W001",
+                upload_publish_name="upload",
             ),
-        ),
-        V1Pod(
-            api_version="v1",
-            kind="Pod",
-            metadata=V1ObjectMeta(
-                name="plugin-image-sampler-0-2-1-0953bd15-d7947ddbd-89f2m",
-                uid="c3100d9b-2262-47ac-ab38-553862791174",
-                labels={
-                    "sagecontinuum.org/plugin-job": "sampler-job",
-                    "sagecontinuum.org/plugin-task": "imagesampler-left",
-                }
-            ),
-            spec=V1PodSpec(
-                node_name="nxcore",
-                containers=[
-                    V1Container(
-                        name="plugin-image-sampler-0-2-1-0953bd15-d7947ddbd-89f2m",
-                        image="docker.io/waggle/plugin-imagesampler:0.2.1",
-                    )
-                ],
-            ),
-        ),
-        V1Pod(
-            api_version="v1",
-            kind="Pod",
-            metadata=V1ObjectMeta(
-                uid="b38b6dad-f95f-4b44-a1a0-44f69b333274",
-                labels={
-                    "sagecontinuum.org/plugin-task": "no-namespace",
-                }
-            ),
-            spec=V1PodSpec(
-                node_name="nxcore",
-                containers=[
-                    V1Container(
-                        name="fuzz-name-to-ensure-no-dependency",
-                        image="no-namespace:1.2.3",
-                    )
-                ],
-            ),
-        ),
-    ]
+            publisher=publisher,
+        )
 
-    return AppState(
-        node="111111222222333333",
-        vsn="W123",
-        upload_publish_name="xxx.upload",
-        pods={pod.metadata.uid: pod for pod in podlist},
-    )
+        pod = Pod(
+            uid="some-uid",
+            image="waggle/plugin-example:1.2.3",
+            host="some-host",
+            labels={},
+        )
 
+        delivery = Delivery(
+            channel=None,
+            delivery_tag=0,
+            routing_key="all",
+            pod_uid="some-uid",
+            body=wagglemsg.dump(wagglemsg.Message(
+                name="env.temperature",
+                value=23.3,
+                timestamp=123456.7,
+                meta={},
+            )),
+        )
+        delivery.ack = MagicMock()
 
-def load_message_for_test_case(app_id, name="test", meta={}, appstate=None):
-    """compact way to specify our set of test cases"""
-    if appstate is None:
-        appstate = get_test_state()
+        handler.handle_pod(pod)
+        handler.handle_delivery(delivery)
 
-    properties = pika.BasicProperties()
-    properties.app_id = app_id
+        delivery.ack.assert_called_once()
+        publisher.publish.assert_not_called()
 
-    body = wagglemsg.dump(wagglemsg.Message(
-        timestamp=1360287003083988472,
-        name=name,
-        value=23.1,
-        meta=meta.copy()
-    ))
+    def test_publish_for_existing_pod(self):
+        config = MessageHandlerConfig(
+            node="0000000000000001",
+            vsn="W001",
+            upload_publish_name="upload",
+        )
 
-    return load_message(appstate, properties, body)
+        publisher = Publisher(channel=None)
+        publisher.publish = MagicMock()
 
+        handler = MessageHandler(
+            config=config,
+            publisher=publisher,
+        )
 
-class TestMain(unittest.TestCase):
+        pod = Pod(
+            uid="some-uid",
+            image="waggle/plugin-example:1.2.3",
+            host="some-host",
+            labels={
+                "sagecontinuum.org/plugin-task": "example",
+            },
+        )
 
-    def test_load_message(self):
-        appstate = get_test_state()
+        msg = wagglemsg.Message(
+            name="env.temperature",
+            value=23.3,
+            timestamp=123456.7,
+            meta={},
+        )
 
-        for uid, pod in appstate.pods.items():
-            msg = load_message_for_test_case(
-                app_id=uid,
-                meta={
-                    "user-defined1": "value1",
-                    "user-defined2": "value2",
-                    "user-defined3": "value3",
-                },
-            )
+        body = wagglemsg.dump(msg)
 
-            self.assertDictEqual(msg.meta, {
-                "node": appstate.node,
-                "vsn": appstate.vsn,
-                "host": pod.spec.node_name,
-                "job": pod.metadata.labels.get("sagecontinuum.org/plugin-job", "sage"),
-                "task": pod.metadata.labels["sagecontinuum.org/plugin-task"],
-                # plugin must match just the name for now, no namespace
-                "plugin": pod.spec.containers[0].image.split("/")[-1],
-                "user-defined1": "value1",
-                "user-defined2": "value2",
-                "user-defined3": "value3",
-            })
+        delivery = Delivery(
+            channel=None,
+            delivery_tag=0,
+            routing_key="all",
+            pod_uid="some-uid",
+            body=body,
+        )
+        delivery.ack = MagicMock()
 
-    # def test_load_message_nonexistant_uid(self):
-    #     with self.assertRaises(InvalidMessageError):
-    #         load_message_for_test_case(app_id="non-existant")
+        handler.handle_pod(pod)
+        handler.handle_delivery(delivery)
 
-    def test_load_message_upload(self):
-        appstate = get_test_state()
+        delivery.ack.assert_called_once()
 
-        for uid, pod in appstate.pods.items():
-            msg = load_message_for_test_case(
-                app_id=uid,
-                name="upload",
-                meta={
-                    "camera": "left",
-                    "filename": "sample.jpg"
-                },
-                appstate=appstate,
-            )
-            
-            self.assertEqual(msg.name, appstate.upload_publish_name)
+        self.assert_published(publisher, ["data.topic", "to-beehive"], wagglemsg.Message(
+            name=msg.name,
+            value=msg.value,
+            timestamp=msg.timestamp,
+            meta={
+                "host": "some-host",
+                "job": "sage",
+                "task": "example",
+                "plugin": "plugin-example:1.2.3",
+                "node": config.node,
+                "vsn": config.vsn,
+            },
+        ))
 
-            job = pod.metadata.labels.get("sagecontinuum.org/plugin-job", "sage")
-            task = pod.metadata.labels["sagecontinuum.org/plugin-task"]
-            version = pod.spec.containers[0].image.split(":")[-1]
-            self.assertEqual(msg.value, f"https://storage.sagecontinuum.org/api/v1/data/{job}/sage-{task}-{version}/{appstate.node}/1360287003083988472-sample.jpg")
+    def assert_published(self, publisher, exchanges, msg):
+        calls = publisher.publish.call_args_list
 
-    def test_load_message_upload_raise_missing_filename(self):
-        appstate = get_test_state()
+        self.assertCountEqual(exchanges, [call.args[0] for call in calls])
 
-        for uid in appstate.pods.keys():
-            with self.assertRaises(InvalidMessageError):
-                load_message_for_test_case(
-                    app_id=uid,
-                    name="upload",
-                    meta={
-                        "camera": "left",
-                    }
-                )
+        for call in calls:
+            _, routing_key, publishing = call.args
+            msgout = wagglemsg.load(publishing.body)
+            self.assertEqual(routing_key, msg.name)
+            self.assertEqual(msgout, msg)
+
 
 if __name__ == "__main__":
     unittest.main()
