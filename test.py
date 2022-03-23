@@ -6,6 +6,15 @@ from pod_event_watcher import Pod
 import wagglemsg
 
 
+class MockClock:
+
+    def __init__(self, time):
+        self.time = time
+    
+    def now(self):
+        return self.time
+
+
 def make_test_handler():
     return MessageHandler(
         config=MessageHandlerConfig(
@@ -14,6 +23,7 @@ def make_test_handler():
             upload_publish_name="upload",
         ),
         publisher=Publisher(channel=None),
+        clock=MockClock(0),
     )
 
 
@@ -162,6 +172,40 @@ class TestMessageHandler(unittest.TestCase):
             },
         ))
         delivery.ack.assert_called_once()
+    
+    def test_expire(self):
+        handler = make_test_handler()
+
+        delivery = Delivery(
+            channel=None,
+            delivery_tag=0,
+            routing_key="all",
+            pod_uid="some-uid",
+            body=wagglemsg.dump(wagglemsg.Message(
+                name="env.temperature",
+                value=23.3,
+                timestamp=123456.7,
+                meta={},
+            )),
+        )
+
+        handler.publisher.publish = MagicMock()
+        delivery.ack = MagicMock()
+
+        handler.handle_delivery(delivery)
+        delivery.ack.assert_not_called()
+        
+        handler.clock.time += handler.config.pod_state_expire_duration*0.90
+        handler.update_pod_state()
+        delivery.ack.assert_not_called()
+
+        handler.clock.time += handler.config.pod_state_expire_duration*0.15
+        handler.update_pod_state()
+        delivery.ack.assert_called_once()
+
+        handler.publisher.publish.assert_not_called()
+    
+    # test this with a series of events. this could unify a couple tests above...
 
     def assert_published(self, publisher, exchanges, msg):
         calls = publisher.publish.call_args_list
