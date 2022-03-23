@@ -63,7 +63,7 @@ class TestMessageHandler(unittest.TestCase):
         delivery.ack.assert_called_once()
         publisher.publish.assert_not_called()
 
-    def test_publish_for_existing_pod(self):
+    def test_handle_pod_then_delivery(self):
         config = MessageHandlerConfig(
             node="0000000000000001",
             vsn="W001",
@@ -107,6 +107,67 @@ class TestMessageHandler(unittest.TestCase):
 
         handler.handle_pod(pod)
         handler.handle_delivery(delivery)
+
+        delivery.ack.assert_called_once()
+
+        self.assert_published(publisher, ["data.topic", "to-beehive"], wagglemsg.Message(
+            name=msg.name,
+            value=msg.value,
+            timestamp=msg.timestamp,
+            meta={
+                "host": "some-host",
+                "job": "sage",
+                "task": "example",
+                "plugin": "plugin-example:1.2.3",
+                "node": config.node,
+                "vsn": config.vsn,
+            },
+        ))
+
+    def test_handle_delivery_then_pod(self):
+        config = MessageHandlerConfig(
+            node="0000000000000001",
+            vsn="W001",
+            upload_publish_name="upload",
+        )
+
+        publisher = Publisher(channel=None)
+        publisher.publish = MagicMock()
+
+        handler = MessageHandler(
+            config=config,
+            publisher=publisher,
+        )
+
+        pod = Pod(
+            uid="some-uid",
+            image="waggle/plugin-example:1.2.3",
+            host="some-host",
+            labels={
+                "sagecontinuum.org/plugin-task": "example",
+            },
+        )
+
+        msg = wagglemsg.Message(
+            name="env.temperature",
+            value=23.3,
+            timestamp=123456.7,
+            meta={},
+        )
+
+        body = wagglemsg.dump(msg)
+
+        delivery = Delivery(
+            channel=None,
+            delivery_tag=0,
+            routing_key="all",
+            pod_uid="some-uid",
+            body=body,
+        )
+        delivery.ack = MagicMock()
+
+        handler.handle_delivery(delivery)
+        handler.handle_pod(pod)
 
         delivery.ack.assert_called_once()
 
