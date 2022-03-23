@@ -96,12 +96,11 @@ class MessageHandler:
         self.pod_state[pod_uid] = pod_state
         return pod_state
 
-    def update_pod_state(self):
+    def handle_expired_pods(self):
         self.logger.debug("updating pod state...")
 
         for pod_uid in list(self.pod_state.keys()):
             pod_state = self.pod_state[pod_uid]
-            self.flush_pod_backlog(pod_uid)
 
             if not self.pod_state_expired(pod_state):
                 continue
@@ -360,7 +359,7 @@ def main():
     logging.info("starting main process.")
     logging.info("will publish uploads under name %r", args.upload_publish_name)
     call_every(connection, 1.0, forward_pod_events)
-    call_every(connection, 10.0, handler.update_pod_state)
+    call_every(connection, 10.0, handler.handle_expired_pods)
     amqp.consume(channel, "to-validator", handler.handle_delivery)
     channel.start_consuming()
 

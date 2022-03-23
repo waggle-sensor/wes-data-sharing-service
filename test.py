@@ -175,33 +175,41 @@ class TestMessageHandler(unittest.TestCase):
     
     def test_expire(self):
         handler = make_test_handler()
-
-        delivery = Delivery(
-            channel=None,
-            delivery_tag=0,
-            routing_key="all",
-            pod_uid="some-uid",
-            body=wagglemsg.dump(wagglemsg.Message(
-                name="env.temperature",
-                value=23.3,
-                timestamp=123456.7,
-                meta={},
-            )),
-        )
-
         handler.publisher.publish = MagicMock()
-        delivery.ack = MagicMock()
 
-        handler.handle_delivery(delivery)
-        delivery.ack.assert_not_called()
+        deliveries = []
+
+        for i in range(23):
+            delivery = Delivery(
+                channel=None,
+                delivery_tag=i,
+                routing_key="all",
+                pod_uid="some-uid",
+                body=wagglemsg.dump(wagglemsg.Message(
+                    name="env.temperature",
+                    value=23.3,
+                    timestamp=123456.7,
+                    meta={},
+                )),
+            )
+            delivery.ack = MagicMock()
+            deliveries.append(delivery)
+
+        for delivery in deliveries:
+            handler.handle_delivery(delivery)
+
+        for delivery in deliveries:
+            delivery.ack.assert_not_called()
         
         handler.clock.time += handler.config.pod_state_expire_duration*0.90
-        handler.update_pod_state()
-        delivery.ack.assert_not_called()
+        handler.handle_expired_pods()
+        for delivery in deliveries:
+            delivery.ack.assert_not_called()
 
         handler.clock.time += handler.config.pod_state_expire_duration*0.15
-        handler.update_pod_state()
-        delivery.ack.assert_called_once()
+        handler.handle_expired_pods()
+        for delivery in deliveries:
+            delivery.ack.assert_called_once()
 
         handler.publisher.publish.assert_not_called()
     
