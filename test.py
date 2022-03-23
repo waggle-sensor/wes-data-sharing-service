@@ -177,7 +177,7 @@ class TestMessageHandler(unittest.TestCase):
         ))
         delivery.ack.assert_called_once()
     
-    def test_handle_expired_pods(self):
+    def test_backlog_should_expire(self):
         handler = make_test_handler()
         handler.publisher.publish = MagicMock()
 
@@ -221,7 +221,56 @@ class TestMessageHandler(unittest.TestCase):
             delivery.ack.assert_called_once()
 
         handler.publisher.publish.assert_not_called()
-    
+
+    def test_stale_pod_should_expire(self):
+        handler = make_test_handler()
+
+        pod = Pod(
+            uid="some-uid",
+            image="waggle/plugin-example:1.2.3",
+            host="some-host",
+            labels={
+                "sagecontinuum.org/plugin-task": "example",
+            },
+        )
+
+        msg = wagglemsg.Message(
+            name="env.temperature",
+            value=23.3,
+            timestamp=123456.7,
+            meta={},
+        )
+
+        body = wagglemsg.dump(msg)
+
+        delivery = Delivery(
+            channel=None,
+            delivery_tag=0,
+            routing_key="all",
+            pod_uid=pod.uid,
+            body=body,
+        )
+
+        handler.publisher.publish = MagicMock()
+        delivery.ack = MagicMock()
+
+        handler.handle_pod(pod)
+
+        # after this, stale pod should be dropped
+        handler.clock.time += handler.config.pod_state_expire_duration*1.1
+        handler.handle_expired_pods()
+
+        # check this by asserting that new delivery isn't flushed right away
+        handler.handle_delivery(delivery)
+        delivery.ack.assert_not_called()
+
+        # after this, delivery should be flushed too
+        handler.clock.time += handler.config.pod_state_expire_duration*1.1
+        handler.handle_expired_pods()
+
+        handler.publisher.publish.assert_not_called()
+        delivery.ack.assert_called_once()
+
     # test this with a series of events. this could unify a couple tests above...
 
     def assert_published(self, publisher, exchanges, msg):
