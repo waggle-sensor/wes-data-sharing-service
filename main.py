@@ -291,6 +291,12 @@ def main():
         type=int,
         help="metrics server port",
     )
+    parser.add_argument(
+        "--pod-expire-duration",
+        type=float,
+        default=3600.0,
+        help="pod expiration time in seconds",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -339,6 +345,7 @@ def main():
             node=args.waggle_node_id,
             vsn=args.waggle_node_vsn,
             upload_publish_name=args.upload_publish_name,
+            pod_state_expire_duration=args.pod_expire_duration,
         ),
         publisher=Publisher(channel),
     )
