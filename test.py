@@ -264,7 +264,7 @@ class TestMessageHandler(unittest.TestCase):
         handler.handle_delivery(delivery)
         delivery.ack.assert_not_called()
 
-        # after this, delivery should be flushed too
+        # after this, delivery should be expired too
         handler.clock.time += handler.config.pod_state_expire_duration*1.1
         handler.handle_expired_pods()
 
