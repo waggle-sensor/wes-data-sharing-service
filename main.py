@@ -46,7 +46,7 @@ class MessageHandlerConfig:
     node: str
     vsn: str
     upload_publish_name: str
-    pod_state_expire_duration: float = 30.0
+    pod_state_expire_duration: float = 3600.0
 
 
 class MessageHandler:
