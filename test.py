@@ -55,7 +55,7 @@ class TestMessageHandler(unittest.TestCase):
             channel=None,
             delivery_tag=0,
             routing_key="all",
-            pod_uid="some-uid",
+            pod_uid=pod.uid,
             body=wagglemsg.dump(wagglemsg.Message(
                 name="env.temperature",
                 value=23.3,
@@ -98,7 +98,7 @@ class TestMessageHandler(unittest.TestCase):
             channel=None,
             delivery_tag=0,
             routing_key="all",
-            pod_uid="some-uid",
+            pod_uid=pod.uid,
             body=body,
         )
 
@@ -148,7 +148,7 @@ class TestMessageHandler(unittest.TestCase):
             channel=None,
             delivery_tag=0,
             routing_key="all",
-            pod_uid="some-uid",
+            pod_uid=pod.uid,
             body=body,
         )
 
