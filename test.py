@@ -206,7 +206,12 @@ class TestMessageHandler(unittest.TestCase):
         for delivery in deliveries:
             delivery.ack.assert_not_called()
 
-        handler.clock.time += handler.config.pod_state_expire_duration*0.15
+        handler.clock.time += handler.config.pod_state_expire_duration*0.20
+        handler.handle_expired_pods()
+        for delivery in deliveries:
+            delivery.ack.assert_called_once()
+
+        # check one more time to make sure not double expired
         handler.handle_expired_pods()
         for delivery in deliveries:
             delivery.ack.assert_called_once()
