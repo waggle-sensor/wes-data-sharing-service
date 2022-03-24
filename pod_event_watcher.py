@@ -3,6 +3,8 @@ from queue import Queue, Empty
 from threading import Thread, Event
 from dataclasses import dataclass
 from prometheus_client import Counter
+import time
+import logging
 
 
 wes_data_service_pod_events_total = Counter("wes_data_service_pod_events_total", "Total number of pod events received.")
@@ -20,6 +22,8 @@ class Pod:
 
 class PluginPodEventWatcher:
 
+    logger = logging.getLogger("PluginPodEventWatcher")
+
     def __init__(self):
         self.watch = kubernetes.watch.Watch()
         self.events = Queue()
@@ -34,10 +38,17 @@ class PluginPodEventWatcher:
 
     def main(self):
         self.stopped.clear()
-        try:
-            self.watch_events()
-        finally:
-            self.stopped.set()
+        while True:
+            try:
+                self.logger.info("watching kubernetes pod events")
+                self.watch_events()
+            except kubernetes.client.exceptions.ApiException:
+                self.logger.info("received kubernetes api exception. will retry...")
+                time.sleep(1)
+                continue
+            except Exception:
+                self.stopped.set()
+                return
 
     def watch_events(self):
         v1 = kubernetes.client.CoreV1Api()
