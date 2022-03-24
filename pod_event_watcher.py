@@ -7,7 +7,7 @@ import time
 import logging
 
 
-wes_data_service_pod_events_total = Counter("wes_data_service_pod_events_total", "Total number of pod events received.")
+wes_data_service_kubernetes_pod_events_total = Counter("wes_data_service_kubernetes_pod_events_total", "Total number of Kubernetes pod events received.")
 wes_data_service_kubernetes_api_exception_total = Counter("wes_data_service_kubernetes_api_exception_total", "Total number of Kubernetes API exceptions.")
 
 
@@ -65,7 +65,7 @@ class PluginPodEventWatcher:
                 image=pod.spec.containers[0].image.split("/")[-1],
                 host=pod.spec.node_name,
             ))
-            wes_data_service_pod_events_total.inc()
+            wes_data_service_kubernetes_pod_events_total.inc()
 
     def ready_events(self):
         while True:
