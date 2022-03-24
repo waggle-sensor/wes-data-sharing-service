@@ -8,6 +8,7 @@ import logging
 
 
 wes_data_service_pod_events_total = Counter("wes_data_service_pod_events_total", "Total number of pod events received.")
+wes_data_service_kubernetes_api_exception_total = Counter("wes_data_service_kubernetes_api_exception_total", "Total number of Kubernetes API exceptions.")
 
 
 @dataclass
@@ -44,6 +45,7 @@ class PluginPodEventWatcher:
                 self.watch_events()
             except kubernetes.client.exceptions.ApiException:
                 self.logger.info("received kubernetes api exception. will retry...")
+                wes_data_service_kubernetes_api_exception_total.inc()
                 time.sleep(1)
                 continue
             except Exception:
