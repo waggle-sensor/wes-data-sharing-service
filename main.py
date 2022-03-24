@@ -46,7 +46,7 @@ class MessageHandlerConfig:
     node: str
     vsn: str
     upload_publish_name: str
-    pod_state_expire_duration: float = 3600.0
+    pod_state_expire_duration: float = 7200.0
 
 
 class MessageHandler:
@@ -98,6 +98,7 @@ class MessageHandler:
         return pod_state
 
     def handle_expired_pods(self):
+        # TODO(sean) use pod status (ex. Running) to prolong life instead of blanket timeout
         self.logger.debug("updating pod state...")
 
         for pod_uid in list(self.pod_state.keys()):
@@ -295,7 +296,7 @@ def main():
     parser.add_argument(
         "--pod-expire-duration",
         type=float,
-        default=3600.0,
+        default=7200.0,
         help="pod expiration time in seconds",
     )
     args = parser.parse_args()
