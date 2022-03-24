@@ -17,7 +17,7 @@ wes_data_service_messages_invalid_total = Counter("wes_data_service_messages_inv
 wes_data_service_messages_backlogged_total = Counter("wes_data_service_messages_backlogged_total", "Total number of messages which have been backlogged.")
 wes_data_service_messages_published_total = Counter("wes_data_service_messages_published_total", "Total number of messages published.")
 wes_data_service_messages_expired_total = Counter("wes_data_service_messages_expired_total", "Total number of messages expired.")
-wes_data_service_pod_expired_total = Counter("wes_data_service_pod_expired_total", "Total number of pods expired.")
+wes_data_service_pods_expired_total = Counter("wes_data_service_pods_expired_total", "Total number of pods expired.")
 
 
 class InvalidMessageError(Exception):
@@ -111,7 +111,7 @@ class MessageHandler:
                 delivery.ack()
                 wes_data_service_messages_expired_total.inc()
             del self.pod_state[pod_uid]
-            wes_data_service_pod_expired_total.inc()
+            wes_data_service_pods_expired_total.inc()
 
         self.logger.debug("updated pod state")
 
