@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from pod_event_watcher import PluginPodEventWatcher
 import amqp
-from prometheus_client import start_http_server, Counter
+from prometheus_client import start_http_server, Counter, Gauge
 
 
 wes_data_service_messages_handled_total = Counter("wes_data_service_messages_handled_total", "Total number of messages handled.")
@@ -18,6 +18,7 @@ wes_data_service_messages_backlogged_total = Counter("wes_data_service_messages_
 wes_data_service_messages_published_total = Counter("wes_data_service_messages_published_total", "Total number of messages published.")
 wes_data_service_messages_expired_total = Counter("wes_data_service_messages_expired_total", "Total number of messages expired.")
 wes_data_service_pods_expired_total = Counter("wes_data_service_pods_expired_total", "Total number of pods expired.")
+wes_data_service_messages_in_backlog = Gauge("wes_data_service_messages_in_backlog", "Number of messages currently in backlog.")
 
 
 class InvalidMessageError(Exception):
@@ -77,6 +78,7 @@ class MessageHandler:
             wes_data_service_messages_backlogged_total.inc()
             pod_state.updated_at = self.clock.now()
             pod_state.backlog.append(delivery)
+            wes_data_service_messages_in_backlog.inc()
         else:
             self.load_and_publish_message(delivery)
             pod_state.updated_at = self.clock.now()
@@ -111,6 +113,7 @@ class MessageHandler:
             for delivery in pod_state.backlog:
                 delivery.ack()
                 wes_data_service_messages_expired_total.inc()
+            wes_data_service_messages_in_backlog.dec(len(pod_state.backlog))
             del self.pod_state[pod_uid]
             wes_data_service_pods_expired_total.inc()
 
@@ -126,6 +129,7 @@ class MessageHandler:
             return
         for delivery in pod_state.backlog:
             self.load_and_publish_message(delivery)
+        wes_data_service_messages_in_backlog.dec(len(pod_state.backlog))
         pod_state.backlog.clear()
         self.logger.debug("flushed pod backlog")
 
