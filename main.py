@@ -19,6 +19,7 @@ wes_data_service_messages_published_total = Counter("wes_data_service_messages_p
 wes_data_service_messages_expired_total = Counter("wes_data_service_messages_expired_total", "Total number of messages expired.")
 wes_data_service_pods_expired_total = Counter("wes_data_service_pods_expired_total", "Total number of pods expired.")
 wes_data_service_messages_in_backlog = Gauge("wes_data_service_messages_in_backlog", "Number of messages currently in backlog.")
+wes_data_service_pods_in_backlog = Gauge("wes_data_service_pods_in_backlog", "Number of pods currently in backlog.")
 
 
 class InvalidMessageError(Exception):
@@ -72,16 +73,15 @@ class MessageHandler:
             return
 
         pod_state = self.get_or_create_pod_state(delivery.pod_uid)
+        pod_state.updated_at = self.clock.now()
 
         if pod_state.pod is None:
             self.logger.debug("adding delivery %s to backlog for %s", delivery, delivery.pod_uid)
             wes_data_service_messages_backlogged_total.inc()
-            pod_state.updated_at = self.clock.now()
-            pod_state.backlog.append(delivery)
             wes_data_service_messages_in_backlog.inc()
+            pod_state.backlog.append(delivery)
         else:
             self.load_and_publish_message(delivery)
-            pod_state.updated_at = self.clock.now()
 
     def handle_pod(self, pod):
         self.logger.debug("handling pod event %s (%s)...", pod.name, pod.uid)
@@ -97,6 +97,7 @@ class MessageHandler:
             return self.pod_state[pod_uid]
         pod_state = self.new_pod_state()
         self.pod_state[pod_uid] = pod_state
+        wes_data_service_pods_in_backlog.inc()
         return pod_state
 
     def handle_expired_pods(self):
@@ -112,9 +113,10 @@ class MessageHandler:
             self.logger.debug("expiring pod state for %s", pod_uid)
             for delivery in pod_state.backlog:
                 delivery.ack()
+                wes_data_service_messages_in_backlog.dec()
                 wes_data_service_messages_expired_total.inc()
-            wes_data_service_messages_in_backlog.dec(len(pod_state.backlog))
             del self.pod_state[pod_uid]
+            wes_data_service_pods_in_backlog.dec()
             wes_data_service_pods_expired_total.inc()
 
         self.logger.debug("updated pod state")
@@ -129,7 +131,7 @@ class MessageHandler:
             return
         for delivery in pod_state.backlog:
             self.load_and_publish_message(delivery)
-        wes_data_service_messages_in_backlog.dec(len(pod_state.backlog))
+            wes_data_service_messages_in_backlog.dec()
         pod_state.backlog.clear()
         self.logger.debug("flushed pod backlog")
 
