@@ -8,9 +8,10 @@ The data sharing service is what makes data available both to plugins on the nod
 
 This service's primary task is to:
 
-1. Handle RabbitMQ messages and Kubernetes pod events.
-2. Validate and add pod metadata to messages.
-3. Republish messages local and to beehive.
+1. Handle RabbitMQ messages published by plugins.
+2. Handle Kubernetes plugin pod events and cache pod metadata for tagging.
+3. Validate and add pod metadata to messages.
+4. Republish messages local and to beehive.
 
 This service is designed to have the following behavior:
 
