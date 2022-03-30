@@ -52,6 +52,18 @@ class MessageHandlerConfig:
 
 
 class MessageHandler:
+    """
+    MessageHandler handles pod and message events and publishes messages triggered by these.
+
+    This implementation is designed to have the following behavior:
+
+    1. Messages with known pod metadata are immediately published.
+    2. Messages with unknown pod metadata are added to a backlog for the message's pod UID.
+    3. When a pod event is handled, the backlog for that Pod UID is immediately flushed.
+    4. Pod metadata expires after config.pod_state_expire_duration seconds. Any pod or
+       message events reset the expiration time for the message's pod UID. When a pod
+       expires all messages in the backlog are dropped.
+    """
 
     logger = logging.getLogger("MessageHandler")
     # TODO(sean) refactor and use a driver to test behavior on pod events and messages.
