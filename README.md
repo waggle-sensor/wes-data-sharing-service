@@ -6,22 +6,18 @@ The data sharing service is what makes data available both to plugins on the nod
 
 ## Design
 
-```txt
-┌─────────┐
-│┌─────────┐       ┌──────────┐  Scope Fork   ┌───────────┐
-└│┌─────────┐ ───> │ Add Meta │ ──────┬─────> │ Serialize │ ───> To Beehive
- └│ Plugins │      │ Validate │       v       │ to Waggle │
-  └─────────┘      └──────────┘   To Plugins  └───────────┘
-                        ^
-                        | Load / cache plugin Pod
-                        |   runtime metadata.
-                        v
-                 ┌────────────┐
-                 │ Kubernetes |
-                 └────────────┘
-```
+This service's primary task is to:
 
-* The "validate message" stage checks to see if the message is a valid intra-node message. Technical note: We _do not_ check if the name exists in the ontology here. Two very interesting use cases were pointed out:
-  * If I am in early development, I probably want to start trying out data sharing without being blocked by having to predefine everything.
-  * If I am building a set of closely related apps, I may want local only messages which don't need to be in the ontology.
-* The "serialize to waggle" stage takes the intra-node message format and uses the ontology / SDF / PDF to serialize it to a waggle protocol message.
+1. Handle RabbitMQ messages published by plugins.
+2. Handle Kubernetes plugin pod events and cache pod metadata for tagging.
+3. Validate and add pod metadata to messages.
+4. Republish messages local and to beehive.
+
+This service is designed to have the following behavior:
+
+1. Valid messages with known pod metadata are immediately published.
+2. Valid messages with unknown pod metadata are added to a backlog for the message's pod UID.
+3. When a pod event is handled, the backlog for that Pod UID is immediately flushed.
+4. Pod metadata expires after config.pod_state_expire_duration seconds. Any pod or
+    message events reset the expiration time for the message's pod UID. When a pod
+    expires all messages in the backlog are dropped.

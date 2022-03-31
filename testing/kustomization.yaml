@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+configMapGenerator:
+  - name: rabbitmq
+    files:
+      - config/rabbitmq.conf
+      - config/definitions.json
+      - config/enabled_plugins
+  - name: wes-identity
+    literals:
+      - "WAGGLE_NODE_ID=0000000000000001"
+      - "WAGGLE_NODE_VSN=W001"
+    options:
+      disableNameSuffixHash: true
+  - name: waggle-data-config
+    files:
+      - config/data-config.json
+    options:
+      disableNameSuffixHash: true
+  - name: wes-audio-server-plugin-conf
+    files:
+      - config/asound.conf
+    options:
+      disableNameSuffixHash: true
+resources:
+  - rabbitmq.yaml

@@ -1,22 +1,25 @@
 import argparse
-import json
 import logging
-import sys
 from os import getenv
 import kubernetes
 import pika
 import wagglemsg
 from pathlib import Path
+import time
+from dataclasses import dataclass
+from pod_event_watcher import PluginPodEventWatcher
+import amqp
+from prometheus_client import start_http_server, Counter, Gauge
 
 
-class AppState:
-    """AppState encapsulates the config and state of this app. It's primarily used to store cached Pod info."""
-
-    def __init__(self, node, vsn, upload_publish_name, pods={}):
-        self.node = node
-        self.vsn = vsn
-        self.upload_publish_name = upload_publish_name
-        self.pods = pods
+wes_data_service_messages_handled_total = Counter("wes_data_service_messages_handled_total", "Total number of messages handled.")
+wes_data_service_messages_invalid_total = Counter("wes_data_service_messages_invalid_total", "Total number of invalid messages.")
+wes_data_service_messages_backlogged_total = Counter("wes_data_service_messages_backlogged_total", "Total number of messages which have been backlogged.")
+wes_data_service_messages_published_total = Counter("wes_data_service_messages_published_total", "Total number of messages published.")
+wes_data_service_messages_expired_total = Counter("wes_data_service_messages_expired_total", "Total number of messages expired.")
+wes_data_service_pods_expired_total = Counter("wes_data_service_pods_expired_total", "Total number of pods expired.")
+wes_data_service_messages_in_backlog = Gauge("wes_data_service_messages_in_backlog", "Number of messages currently in backlog.")
+wes_data_service_pods_in_backlog = Gauge("wes_data_service_pods_in_backlog", "Number of pods currently in backlog.")
 
 
 class InvalidMessageError(Exception):
@@ -24,6 +27,201 @@ class InvalidMessageError(Exception):
 
     def __init__(self, error):
         self.error = error
+
+
+class MonotonicClock:
+
+    def now(self):
+        return time.monotonic()
+
+
+@dataclass
+class PodState:
+
+    pod: object
+    backlog: list
+    updated_at: float
+
+
+@dataclass
+class MessageHandlerConfig:
+    node: str
+    vsn: str
+    upload_publish_name: str
+    pod_state_expire_duration: float = 7200.0
+
+
+class MessageHandler:
+    """
+    MessageHandler handles pod and message events and publishes messages triggered by these.
+
+    This implementation is designed to have the following behavior:
+
+    1. Messages with known pod metadata are immediately published.
+    2. Messages with unknown pod metadata are added to a backlog for the message's pod UID.
+    3. When a pod event is handled, the backlog for that Pod UID is immediately flushed.
+    4. Pod metadata expires after config.pod_state_expire_duration seconds. Any pod or
+       message events reset the expiration time for the message's pod UID. When a pod
+       expires all messages in the backlog are dropped.
+    """
+
+    logger = logging.getLogger("MessageHandler")
+    # TODO(sean) refactor and use a driver to test behavior on pod events and messages.
+
+    def __init__(self, config: MessageHandlerConfig, publisher, clock=MonotonicClock()):
+        self.config = config
+        self.pod_state = {}
+        self.publisher = publisher
+        self.clock = clock
+
+    def handle_delivery(self, delivery: amqp.Delivery):
+        self.logger.debug("handling delivery...")
+        wes_data_service_messages_handled_total.inc()
+
+        if delivery.pod_uid is None:
+            self.logger.debug("dropping message without pod uid")
+            wes_data_service_messages_invalid_total.inc()
+            delivery.ack()
+            return
+
+        pod_state = self.get_or_create_pod_state(delivery.pod_uid)
+        pod_state.updated_at = self.clock.now()
+
+        if pod_state.pod is None:
+            self.logger.debug("adding delivery %s to backlog for %s", delivery, delivery.pod_uid)
+            wes_data_service_messages_backlogged_total.inc()
+            wes_data_service_messages_in_backlog.inc()
+            pod_state.backlog.append(delivery)
+        else:
+            self.load_and_publish_message(delivery)
+
+    def handle_pod(self, pod):
+        self.logger.debug("handling pod event %s (%s)...", pod.name, pod.uid)
+
+        pod_state = self.get_or_create_pod_state(pod.uid)
+        pod_state.pod = pod
+        pod_state.updated_at = self.clock.now()
+
+        self.flush_pod_backlog(pod.uid)
+
+    def get_or_create_pod_state(self, pod_uid):
+        if pod_uid in self.pod_state:
+            return self.pod_state[pod_uid]
+        pod_state = self.new_pod_state()
+        self.pod_state[pod_uid] = pod_state
+        wes_data_service_pods_in_backlog.inc()
+        return pod_state
+
+    def handle_expired_pods(self):
+        # TODO(sean) use pod status (ex. Running) to prolong life instead of blanket timeout
+        self.logger.debug("updating pod state...")
+
+        for pod_uid in list(self.pod_state.keys()):
+            pod_state = self.pod_state[pod_uid]
+
+            if not self.pod_state_expired(pod_state):
+                continue
+
+            self.logger.debug("expiring pod state for %s", pod_uid)
+            for delivery in pod_state.backlog:
+                delivery.ack()
+                wes_data_service_messages_in_backlog.dec()
+                wes_data_service_messages_expired_total.inc()
+            del self.pod_state[pod_uid]
+            wes_data_service_pods_in_backlog.dec()
+            wes_data_service_pods_expired_total.inc()
+
+        self.logger.debug("updated pod state")
+
+    def pod_state_expired(self, pod_state):
+        return self.clock.now() - pod_state.updated_at > self.config.pod_state_expire_duration
+
+    def flush_pod_backlog(self, pod_uid):
+        self.logger.debug("flushing pod backlog for %s...", pod_uid)
+        pod_state = self.pod_state[pod_uid]
+        if pod_state.pod is None:
+            return
+        for delivery in pod_state.backlog:
+            self.load_and_publish_message(delivery)
+            wes_data_service_messages_in_backlog.dec()
+        pod_state.backlog.clear()
+        self.logger.debug("flushed pod backlog")
+
+    def load_and_publish_message(self, delivery: amqp.Delivery):
+        self.logger.debug("publishing message %s...",  delivery)
+
+        try:
+            msg = wagglemsg.load(delivery.body)
+            update_message_with_config_metadata(msg, self.config)
+            update_message_with_pod_metadata(msg, self.pod_state[delivery.pod_uid].pod)
+        except Exception:
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.exception("failed to load waggle message")
+            delivery.ack()
+            wes_data_service_messages_invalid_total.inc()
+            return
+        
+        if msg.name == "upload":
+            msg = convert_to_upload_message(msg, self.config)
+
+        body = wagglemsg.dump(msg)
+
+        if delivery.routing_key in ["node", "all"]:
+            self.logger.debug("forwarding message type %r to local", msg.name)
+            self.publisher.publish("data.topic", msg.name, amqp.Publishing(body))
+
+        if delivery.routing_key in ["beehive", "all"]:
+            self.logger.debug("forwarding message type %r to beehive", msg.name)
+            publishing = amqp.Publishing(body, pika.BasicProperties(delivery_mode=2))
+            self.publisher.publish("to-beehive", msg.name, publishing)
+
+        delivery.ack()
+        self.logger.debug("published message %s",  delivery)
+        wes_data_service_messages_published_total.inc()
+
+    def new_pod_state(self):
+        return PodState(pod=None, backlog=[], updated_at=self.clock.now())
+
+
+class Publisher:
+
+    def __init__(self, channel):
+        self.channel = channel
+    
+    def publish(self, exchange, routing_key, publishing):
+        self.channel.basic_publish(
+            exchange=exchange,
+            routing_key=routing_key,
+            properties=publishing.properties,
+            body=publishing.body,
+        )
+
+
+def update_message_with_config_metadata(msg: wagglemsg.Message, config: MessageHandlerConfig):
+    msg.meta["node"] = config.node
+    msg.meta["vsn"] = config.vsn
+
+
+def update_message_with_pod_metadata(msg: wagglemsg.Message, pod):
+    # add scheduler metadata using pod uid
+    msg.meta["host"] = pod.host
+    # TODO include namespace
+    msg.meta["plugin"] = pod.image.split("/")[-1]
+    msg.meta["job"] = pod.labels.get("sagecontinuum.org/plugin-job", "sage")
+
+    try:
+        msg.meta["task"] = pod.labels["sagecontinuum.org/plugin-task"]
+    except KeyError:
+        raise InvalidMessageError(f"pod {pod.name} missing task label")
+
+
+def convert_to_upload_message(msg: wagglemsg.Message, config: MessageHandlerConfig) -> wagglemsg.Message:
+    return wagglemsg.Message(
+        timestamp=msg.timestamp,
+        name=config.upload_publish_name,
+        meta=msg.meta,  # TODO(sean) be careful on ownership here, in case this is mutated
+        value=upload_url_for_message(msg),
+    )
 
 
 def upload_url_for_message(msg: wagglemsg.Message) -> str:
@@ -34,123 +232,13 @@ def upload_url_for_message(msg: wagglemsg.Message) -> str:
         filename = msg.meta["filename"]
         plugin = msg.meta["plugin"]
         namespace = "sage"
-        version = plugin.split(":")[-1]
+        tag = plugin.split(":")[-1]
     except KeyError as exc:
         raise InvalidMessageError(f"message missing fields for upload url: {exc}")
-    return f"https://storage.sagecontinuum.org/api/v1/data/{job}/{namespace}-{task}-{version}/{node}/{msg.timestamp}-{filename}"
+    return f"https://storage.sagecontinuum.org/api/v1/data/{job}/{namespace}-{task}-{tag}/{node}/{msg.timestamp}-{filename}"
 
 
-def load_message(appstate: AppState, properties: pika.BasicProperties, body: bytes):
-    try:
-        msg = wagglemsg.load(body)
-    except Exception:
-        raise InvalidMessageError(f"failed to parse message body {body!r}")
-
-    if properties.app_id is None:
-        raise InvalidMessageError("message missing pod uid")
-
-    try:
-        pod = appstate.pods[properties.app_id]
-    except KeyError as key:
-        raise InvalidMessageError(f"no pod with uid {key}")
-
-    # add scheduler metadata using pod uid
-    msg.meta["host"] = pod.spec.node_name
-    # TODO include namespace
-    msg.meta["plugin"] = pod.spec.containers[0].image.split("/")[-1]
-    msg.meta["job"] = pod.metadata.labels.get("sagecontinuum.org/plugin-job", "sage")
-
-    try:
-        msg.meta["task"] = pod.metadata.labels["sagecontinuum.org/plugin-task"]
-    except KeyError:
-        raise InvalidMessageError(f"pod {pod.metadata.name} missing task label")
-
-    # add node metadata
-    msg.meta["node"] = appstate.node
-    msg.meta["vsn"] = appstate.vsn
-
-    # rewrite upload messages to use url
-    if msg.name == "upload":
-        msg = wagglemsg.Message(
-            timestamp=msg.timestamp,
-            name=appstate.upload_publish_name,
-            meta=msg.meta,  # load_message is still the sole owner so no need to copy
-            value=upload_url_for_message(msg),
-        )
-
-    return msg
-
-
-def publish_message(ch, scope, msg):
-    body = wagglemsg.dump(msg)
-
-    if scope not in {"node", "beehive", "all"}:
-        raise InvalidMessageError(f"invalid message scope {scope!r}")
-
-    if scope in {"node", "all"}:
-        logging.debug("forwarding message type %r to local", msg.name)
-        ch.basic_publish(exchange="data.topic", routing_key=msg.name, body=body)
-
-    if scope in {"beehive", "all"}:
-        logging.debug("forwarding message type %r to beehive", msg.name)
-        # messages to beehive are always marked as persistent
-        properties = pika.BasicProperties(delivery_mode=2)
-        ch.basic_publish(
-            exchange="to-beehive",
-            routing_key=msg.name,
-            properties=properties,
-            body=body,
-        )
-
-
-# NOTE update_pod_node_names introduces coupling between the data pipeline and
-# kubernetes... however, conceptually we'll just coupling message data with scheduling
-# metadata. for now, that scheduler is kubernetes, which is why we're talking directly
-# to it. (kubernetes is the only thing which *actually* knows where a Pod is assigned)
-def update_pod_node_names(pods: dict):
-    """update_pod_node_names updates pods to the current {Pod UID: Pod Info} state."""
-    logging.info("updating pod table...")
-    v1 = kubernetes.client.CoreV1Api()
-    ret = v1.list_pod_for_all_namespaces(watch=False)
-    pods.clear()
-    for pod in ret.items:
-        # only pods which have been scheduled and have nodeName metadata
-        if not (isinstance(pod.spec.node_name, str) and pod.spec.node_name != ""):
-            continue
-        pods[pod.metadata.uid] = pod
-        logging.info("adding pod: %s namespace: %s", pod.metadata.name, pod.metadata.namespace)
-    logging.info("updated pod table")
-
-
-def create_on_validator_callback(appstate):
-    def on_validator_callback(ch, method, properties, body):
-        logging.debug("processing message")
-
-        # update cached pod info when we receive an unknown pod UID
-        # TODO think about rogue case where a made up UID is rapidly sent
-        if properties.app_id is not None and properties.app_id not in appstate.pods:
-            logging.info("got new pod uid %s", properties.app_id)
-            update_pod_node_names(appstate.pods)
-            # TODO think about sending info message indicating we have data from this Pod now.
-            # this could be sent up to further bind metadata together on the cloud.
-
-        try:
-            msg = load_message(appstate, properties, body)
-            publish_message(ch, method.routing_key, msg)
-        except InvalidMessageError as e:
-            logging.error("invalid message: %s", e)
-            ch.basic_ack(method.delivery_tag)
-            return
-
-        ch.basic_ack(method.delivery_tag)
-        logging.debug("processed message")
-
-    return on_validator_callback
-
-
-def declare_exchange_with_queue(
-    ch: pika.adapters.blocking_connection.BlockingChannel, name: str
-):
+def declare_exchange_with_queue(ch: pika.adapters.blocking_connection.BlockingChannel, name: str):
     ch.exchange_declare(name, exchange_type="fanout", durable=True)
     ch.queue_declare(name, durable=True)
     ch.queue_bind(name, name)
@@ -166,6 +254,13 @@ def load_kube_config(kubeconfig: str):
         kubernetes.config.load_incluster_config()
 
 
+def call_every(connection, interval, func):
+    def func_every():
+        func()
+        connection.call_later(interval, func_every)
+    connection.call_later(interval, func_every)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", action="store_true", help="enable verbose logging")
@@ -174,7 +269,11 @@ def main():
         default=getenv("UPLOAD_PUBLISH_NAME", "upload"),
         help="measurement name to publish uploads to",
     )
-    parser.add_argument("--kubeconfig", default=None, help="kubernetes config")
+    parser.add_argument(
+        "--kubeconfig",
+        default=None,
+        help="kubernetes config",
+    )
     parser.add_argument(
         "--rabbitmq-host",
         default=getenv("RABBITMQ_HOST", "rabbitmq-server"),
@@ -206,6 +305,18 @@ def main():
         default=getenv("WAGGLE_NODE_VSN", "W000"),
         help="waggle node vsn",
     )
+    parser.add_argument(
+        "--metrics-port",
+        default=getenv("METRICS_PORT", "8080"),
+        type=int,
+        help="metrics server port",
+    )
+    parser.add_argument(
+        "--pod-expire-duration",
+        type=float,
+        default=7200.0,
+        help="pod expiration time in seconds",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -213,7 +324,8 @@ def main():
         format="%(asctime)s %(message)s",
         datefmt="%Y/%m/%d %H:%M:%S",
     )
-    # pika logging is too verbose, so we turn it down.
+    # turn down the super verbose library level logging
+    logging.getLogger("kubernetes").setLevel(logging.CRITICAL)
     logging.getLogger("pika").setLevel(logging.CRITICAL)
 
     # NOTE the service account needs read access to pod info
@@ -245,15 +357,34 @@ def main():
     declare_exchange_with_queue(channel, "to-validator")
     declare_exchange_with_queue(channel, "to-beehive")
 
-    appstate = AppState(
-        node=args.waggle_node_id,
-        vsn=args.waggle_node_vsn,
-        upload_publish_name=args.upload_publish_name,
+    # start metrics server
+    start_http_server(args.metrics_port)
+
+    handler = MessageHandler(
+        config=MessageHandlerConfig(
+            node=args.waggle_node_id,
+            vsn=args.waggle_node_vsn,
+            upload_publish_name=args.upload_publish_name,
+            pod_state_expire_duration=args.pod_expire_duration,
+        ),
+        publisher=Publisher(channel),
     )
 
+    pod_event_watcher = PluginPodEventWatcher()
+
+    def forward_pod_events():
+        logging.debug("updating pod events...")
+        if pod_event_watcher.is_stopped():
+            raise RuntimeError("pod event watcher has stopped")
+        for pod in pod_event_watcher.ready_events():
+            handler.handle_pod(pod)
+        logging.debug("updated pod events")
+
     logging.info("starting main process.")
-    logging.info("will publish uploads under name %r.", appstate.upload_publish_name)
-    channel.basic_consume("to-validator", create_on_validator_callback(appstate))
+    logging.info("will publish uploads under name %r", args.upload_publish_name)
+    call_every(connection, 1.0, forward_pod_events)
+    call_every(connection, 10.0, handler.handle_expired_pods)
+    amqp.consume(channel, "to-validator", handler.handle_delivery)
     channel.start_consuming()
 
 
