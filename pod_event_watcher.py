@@ -44,6 +44,7 @@ class PluginPodEventWatcher:
             try:
                 self.logger.info("watching kubernetes pod events")
                 self.watch_events()
+                self.logger.info("watcher timed out stream. will watch again...")
             except kubernetes.client.exceptions.ApiException:
                 self.logger.info("received kubernetes api exception. will retry...")
                 wes_data_service_kubernetes_api_exception_total.inc()
@@ -56,7 +57,7 @@ class PluginPodEventWatcher:
 
     def watch_events(self):
         v1 = kubernetes.client.CoreV1Api()
-        for event in self.watch.stream(v1.list_pod_for_all_namespaces, label_selector="sagecontinuum.org/plugin-task"):
+        for event in self.watch.stream(v1.list_pod_for_all_namespaces, timeout_seconds=300.0, label_selector="sagecontinuum.org/plugin-task"):
             pod = event["object"]
             if pod.spec.node_name is None:
                 continue

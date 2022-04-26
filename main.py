@@ -341,6 +341,8 @@ def main():
         client_properties={"name": "data-sharing-service"},
         connection_attempts=3,
         retry_delay=10,
+        heartbeat=600,
+        blocked_connection_timeout=300,
     )
 
     logging.info(
