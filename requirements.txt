@@ -1,4 +1,4 @@
 pywagglemsg>=0.3.0
 kubernetes==22.*
-pika==1.*
+pika==1.2.*
 prometheus-client
