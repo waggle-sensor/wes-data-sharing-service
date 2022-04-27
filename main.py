@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pod_event_watcher import PluginPodEventWatcher
 import amqp
 from prometheus_client import start_http_server, Counter, Gauge
+from contextlib import ExitStack
 
 
 wes_data_service_messages_handled_total = Counter("wes_data_service_messages_handled_total", "Total number of messages handled.")
@@ -67,7 +68,6 @@ class MessageHandler:
     """
 
     logger = logging.getLogger("MessageHandler")
-    # TODO(sean) refactor and use a driver to test behavior on pod events and messages.
 
     def __init__(self, config: MessageHandlerConfig, publisher, clock=MonotonicClock()):
         self.config = config
@@ -188,19 +188,44 @@ class MessageHandler:
     def new_pod_state(self):
         return PodState(pod=None, backlog=[], updated_at=self.clock.now())
 
+    def clear_backlogs_but_keep_pod_state(self):
+        for pod_state in self.pod_state.values():
+            pod_state.backlog.clear()
+        wes_data_service_messages_in_backlog.set(0)
+
 
 class Publisher:
 
-    def __init__(self, channel):
-        self.channel = channel
-    
+    logger = logging.getLogger("Publisher")
+
+    def __init__(self, params):
+        self.params = params
+        self._connect()
+
+    def _connect(self):
+        self.logger.debug("publisher connecting...")
+        self.connection = pika.BlockingConnection(self.params)
+        self.channel = self.connection.channel()
+        self.logger.debug("publisher connected")
+
+    def close(self):
+        self.channel.close()
+        self.connection.close()
+
     def publish(self, exchange, routing_key, publishing):
-        self.channel.basic_publish(
-            exchange=exchange,
-            routing_key=routing_key,
-            properties=publishing.properties,
-            body=publishing.body,
-        )
+        while True:
+            try:
+                return self.channel.basic_publish(
+                    exchange=exchange,
+                    routing_key=routing_key,
+                    properties=publishing.properties,
+                    body=publishing.body,
+                )
+            except Exception:
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.exception("publisher failed to publish. will reconnect and retry...")
+                time.sleep(3.0)
+                self._connect()
 
 
 def update_message_with_config_metadata(msg: wagglemsg.Message, config: MessageHandlerConfig):
@@ -360,19 +385,8 @@ def main():
         blocked_connection_timeout=600,
     )
 
-    logging.info(
-        "connecting to rabbitmq server at %s:%d as %s.",
-        params.host,
-        params.port,
-        params.credentials.username,
-    )
-    connection = pika.BlockingConnection(params)
-    channel = connection.channel()
-
-    logging.info("setting up queues and exchanges.")
-    channel.exchange_declare("data.topic", exchange_type="topic", durable=True)
-    declare_exchange_with_queue(channel, "to-validator")
-    declare_exchange_with_queue(channel, "to-beehive")
+    logging.info("will publish uploads under name %r", args.upload_publish_name)
+    publisher = Publisher(params)
 
     # start metrics server
     start_http_server(args.metrics_port)
@@ -385,25 +399,55 @@ def main():
             pod_state_expire_duration=args.pod_expire_duration,
             pod_without_metadata_state_expire_duration=args.pod_without_metadata_expire_duration,
         ),
-        publisher=Publisher(channel),
+        publisher=publisher,
     )
 
-    pod_event_watcher = PluginPodEventWatcher()
+    while True:
+        with ExitStack() as es:
+            logging.info(
+                "connecting consumer to rabbitmq server at %s:%d as %s.",
+                params.host,
+                params.port,
+                params.credentials.username,
+            )
 
-    def forward_pod_events():
-        logging.debug("updating pod events...")
-        if pod_event_watcher.is_stopped():
-            raise RuntimeError("pod event watcher has stopped")
-        for pod in pod_event_watcher.ready_events():
-            handler.handle_pod(pod)
-        logging.debug("updated pod events")
+            connection = es.enter_context(pika.BlockingConnection(params))
+            channel = es.enter_context(connection.channel())
 
-    logging.info("starting main process.")
-    logging.info("will publish uploads under name %r", args.upload_publish_name)
-    call_every(connection, 1.0, forward_pod_events)
-    call_every(connection, 10.0, handler.handle_expired_pods)
-    amqp.consume(channel, "to-validator", handler.handle_delivery)
-    channel.start_consuming()
+            logging.info("setting up queues and exchanges.")
+            channel.exchange_declare("data.topic", exchange_type="topic", durable=True)
+            declare_exchange_with_queue(channel, "to-validator")
+            declare_exchange_with_queue(channel, "to-beehive")
+
+            pod_event_watcher = es.enter_context(PluginPodEventWatcher())
+
+            def forward_pod_events():
+                logging.debug("updating pod events...")
+                for pod in pod_event_watcher.ready_events():
+                    if pod is None:
+                        raise RuntimeError("pod watcher terminated")
+                    handler.handle_pod(pod)
+                logging.debug("updated pod events")
+
+            call_every(connection, 1.0, forward_pod_events)
+            call_every(connection, 10.0, handler.handle_expired_pods)
+            amqp.consume(channel, "to-validator", handler.handle_delivery)
+
+            logging.info("starting consumer...")
+            try:
+                channel.start_consuming()
+            except KeyboardInterrupt:
+                return
+            except Exception:
+                logging.exception("consumer disconnected. will retry...")
+
+        # # TODO(sean) figure out clean way of handling this. when the channel expires, I assume the
+        # outstanding deliveries must be consumed again.
+        logging.info("clearing backlogged messages but keeping pod state")
+        handler.clear_backlogs_but_keep_pod_state()
+        time.sleep(3.0)
+
+        # we can just allow the cache to expire stuff separately...
 
 
 if __name__ == "__main__":

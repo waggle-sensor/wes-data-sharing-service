@@ -15,6 +15,10 @@ class MockClock:
         return self.time
 
 
+class MockPublisher:
+    pass
+
+
 def make_test_handler():
     return MessageHandler(
         config=MessageHandlerConfig(
@@ -22,7 +26,7 @@ def make_test_handler():
             vsn="W001",
             upload_publish_name="upload",
         ),
-        publisher=Publisher(channel=None),
+        publisher=MockPublisher(),
         clock=MockClock(0),
     )
 
