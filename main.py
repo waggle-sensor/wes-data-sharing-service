@@ -49,6 +49,7 @@ class MessageHandlerConfig:
     vsn: str
     upload_publish_name: str
     pod_state_expire_duration: float = 7200.0
+    pod_without_metadata_state_expire_duration: float = 300.0
 
 
 class MessageHandler:
@@ -134,7 +135,11 @@ class MessageHandler:
         self.logger.debug("updated pod state")
 
     def pod_state_expired(self, pod_state):
-        return self.clock.now() - pod_state.updated_at > self.config.pod_state_expire_duration
+        if pod_state.pod is None:
+            ttl = self.config.pod_without_metadata_state_expire_duration
+        else:
+            ttl = self.config.pod_state_expire_duration
+        return self.clock.now() - pod_state.updated_at > ttl
 
     def flush_pod_backlog(self, pod_uid):
         self.logger.debug("flushing pod backlog for %s...", pod_uid)
@@ -315,9 +320,18 @@ def main():
         "--pod-expire-duration",
         type=float,
         default=7200.0,
-        help="pod expiration time in seconds",
+        help="expiration time for pods in seconds",
+    )
+    parser.add_argument(
+        "--pod-without-metadata-expire-duration",
+        type=float,
+        default=300.0,
+        help="expiration time for pods without metadata in seconds",
     )
     args = parser.parse_args()
+
+    # config should never be this way but this is an explicit sanity check
+    assert args.pod_without_metadata_expire_duration <= args.pod_expire_duration
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
@@ -368,6 +382,7 @@ def main():
             vsn=args.waggle_node_vsn,
             upload_publish_name=args.upload_publish_name,
             pod_state_expire_duration=args.pod_expire_duration,
+            pod_without_metadata_state_expire_duration=args.pod_without_metadata_state_expire_duration,
         ),
         publisher=Publisher(channel),
     )

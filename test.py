@@ -36,8 +36,10 @@ class TestMessageHandler(unittest.TestCase):
         handler.publisher.publish = MagicMock()
         delivery.ack = MagicMock()
         
+        # 1. get bad delivery
         handler.handle_delivery(delivery)
 
+        # 2. message should not be published and should be dropped
         handler.publisher.publish.assert_not_called()
         delivery.ack.assert_called_once()
     
@@ -67,9 +69,13 @@ class TestMessageHandler(unittest.TestCase):
         handler.publisher.publish = MagicMock()
         delivery.ack = MagicMock()
 
+        # 1. get pod without task
         handler.handle_pod(pod)
+
+        # 2. get delivery
         handler.handle_delivery(delivery)
 
+        # 3. message should not be called and should be dropped
         handler.publisher.publish.assert_not_called()
         delivery.ack.assert_called_once()
 
@@ -105,9 +111,13 @@ class TestMessageHandler(unittest.TestCase):
         handler.publisher.publish = MagicMock()
         delivery.ack = MagicMock()
 
+        # 1. get pod
         handler.handle_pod(pod)
+
+        # 2. get delivery
         handler.handle_delivery(delivery)
 
+        # 3. message should be published to locally and to beehive and acked
         self.assert_published(handler.publisher, ["data.topic", "to-beehive"], wagglemsg.Message(
             name=msg.name,
             value=msg.value,
@@ -155,13 +165,22 @@ class TestMessageHandler(unittest.TestCase):
         handler.publisher.publish = MagicMock()
         delivery.ack = MagicMock()
 
+        # 1. get delivery
         handler.handle_delivery(delivery)
 
-        handler.clock.time += handler.config.pod_state_expire_duration*0.80
-        handler.handle_expired_pods()
+        # 2. nothing should have happened yet since we don't have a pod
+        delivery.ack.assert_not_called()
+        handler.publisher.publish.assert_not_called()
 
+        # 3. delivery should still be unacked before "non metadata" expire time
+        handler.clock.time += handler.config.pod_without_metadata_state_expire_duration
+        handler.handle_expired_pods()
+        delivery.ack.assert_not_called()
+
+        # 4. get pod
         handler.handle_pod(pod)
 
+        # 5. message should be published to locally and to beehive and acked
         self.assert_published(handler.publisher, ["data.topic", "to-beehive"], wagglemsg.Message(
             name=msg.name,
             value=msg.value,
@@ -177,10 +196,11 @@ class TestMessageHandler(unittest.TestCase):
         ))
         delivery.ack.assert_called_once()
     
-    def test_backlog_should_expire(self):
+    def test_backlog_should_expire_without_metadata(self):
         handler = make_test_handler()
         handler.publisher.publish = MagicMock()
 
+        # generate a bunch of deliveries
         deliveries = []
 
         for i in range(23):
@@ -199,27 +219,33 @@ class TestMessageHandler(unittest.TestCase):
             delivery.ack = MagicMock()
             deliveries.append(delivery)
 
+        # 1. get all deliveries
         for delivery in deliveries:
             handler.handle_delivery(delivery)
 
+        # 2. nothing should have happened yet since we don't have a pod
+        handler.publisher.publish.assert_not_called()
         for delivery in deliveries:
             delivery.ack.assert_not_called()
 
-        handler.clock.time += handler.config.pod_state_expire_duration*0.90
+        # 3. deliveries should still be valid up until "non metadata" expire time
+        handler.clock.time += handler.config.pod_without_metadata_state_expire_duration
         handler.handle_expired_pods()
         for delivery in deliveries:
             delivery.ack.assert_not_called()
 
-        handler.clock.time += handler.config.pod_state_expire_duration*0.20
+        # 4. deliveries should expire after one more tick
+        handler.clock.time += 1
         handler.handle_expired_pods()
         for delivery in deliveries:
             delivery.ack.assert_called_once()
 
-        # check one more time to make sure not double expired
+        # 5. deliveries should be removed as to not "double expire"
         handler.handle_expired_pods()
         for delivery in deliveries:
             delivery.ack.assert_called_once()
 
+        # 6. nothing should have been published
         handler.publisher.publish.assert_not_called()
 
     def test_stale_pod_should_expire(self):
@@ -254,24 +280,24 @@ class TestMessageHandler(unittest.TestCase):
         handler.publisher.publish = MagicMock()
         delivery.ack = MagicMock()
 
+        # 1. get pod
         handler.handle_pod(pod)
 
-        # after this, stale pod should be dropped
-        handler.clock.time += handler.config.pod_state_expire_duration*1.1
+        # 2. pod should expire
+        handler.clock.time += handler.config.pod_state_expire_duration + 1
         handler.handle_expired_pods()
 
-        # check this by asserting that new delivery isn't flushed right away
+        # 3. now that pod is expired, new delivery shouldn't be flushed right away
         handler.handle_delivery(delivery)
         delivery.ack.assert_not_called()
 
-        # after this, delivery should be expired too
-        handler.clock.time += handler.config.pod_state_expire_duration*1.1
+        # 4. after this, delivery should expire after "without metadata" duration
+        handler.clock.time += handler.config.pod_without_metadata_state_expire_duration + 1
         handler.handle_expired_pods()
 
+        # 5. message should not be published and should be dropped
         handler.publisher.publish.assert_not_called()
         delivery.ack.assert_called_once()
-
-    # test this with a series of events. this could unify a couple tests above...
 
     def assert_published(self, publisher, exchanges, msg):
         calls = publisher.publish.call_args_list
