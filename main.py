@@ -382,7 +382,7 @@ def main():
             vsn=args.waggle_node_vsn,
             upload_publish_name=args.upload_publish_name,
             pod_state_expire_duration=args.pod_expire_duration,
-            pod_without_metadata_state_expire_duration=args.pod_without_metadata_state_expire_duration,
+            pod_without_metadata_state_expire_duration=args.pod_without_metadata_expire_duration,
         ),
         publisher=Publisher(channel),
     )
