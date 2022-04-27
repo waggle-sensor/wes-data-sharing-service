@@ -74,6 +74,7 @@ class MessageHandler:
         self.pod_state = {}
         self.publisher = publisher
         self.clock = clock
+        self.deliveries_since_handle_expired_pods = 0
 
     def handle_delivery(self, delivery: amqp.Delivery):
         self.logger.debug("handling delivery...")
@@ -86,7 +87,6 @@ class MessageHandler:
             return
 
         pod_state = self.get_or_create_pod_state(delivery.pod_uid)
-        pod_state.updated_at = self.clock.now()
 
         if pod_state.pod is None:
             self.logger.debug("adding delivery %s to backlog for %s", delivery, delivery.pod_uid)
@@ -95,6 +95,7 @@ class MessageHandler:
             pod_state.backlog.append(delivery)
         else:
             self.load_and_publish_message(delivery)
+            pod_state.updated_at = self.clock.now()
 
     def handle_pod(self, pod):
         self.logger.debug("handling pod event %s (%s)...", pod.name, pod.uid)
@@ -355,8 +356,8 @@ def main():
         client_properties={"name": "data-sharing-service"},
         connection_attempts=3,
         retry_delay=10,
-        heartbeat=600,
-        blocked_connection_timeout=300,
+        heartbeat=900,
+        blocked_connection_timeout=600,
     )
 
     logging.info(

@@ -219,20 +219,11 @@ class TestMessageHandler(unittest.TestCase):
             delivery.ack = MagicMock()
             deliveries.append(delivery)
 
-        # 1. get all deliveries
+        # 1. get all deliveries over time. this should *not* delay expiration since we don't have pod metadata.
         for delivery in deliveries:
             handler.handle_delivery(delivery)
-
-        # 2. nothing should have happened yet since we don't have a pod
-        handler.publisher.publish.assert_not_called()
-        for delivery in deliveries:
             delivery.ack.assert_not_called()
-
-        # 3. deliveries should still be valid up until "non metadata" expire time
-        handler.clock.time += handler.config.pod_without_metadata_state_expire_duration
-        handler.handle_expired_pods()
-        for delivery in deliveries:
-            delivery.ack.assert_not_called()
+            handler.clock.time += handler.config.pod_without_metadata_state_expire_duration / len(deliveries)
 
         # 4. deliveries should expire after one more tick
         handler.clock.time += 1
