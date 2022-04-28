@@ -1,16 +1,16 @@
 import argparse
 import logging
 from os import getenv
-import kubernetes
+import time
+import json
+from dataclasses import dataclass
+from contextlib import ExitStack
+from functools import lru_cache
+from typing import Deque
+from prometheus_client import start_http_server, Counter, Gauge
+import redis
 import pika
 import wagglemsg
-from pathlib import Path
-import time
-from dataclasses import dataclass
-from pod_event_watcher import PluginPodEventWatcher
-import amqp
-from prometheus_client import start_http_server, Counter, Gauge
-from contextlib import ExitStack
 
 
 wes_data_service_messages_handled_total = Counter("wes_data_service_messages_handled_total", "Total number of messages handled.")
@@ -21,6 +21,71 @@ wes_data_service_messages_expired_total = Counter("wes_data_service_messages_exp
 wes_data_service_pods_expired_total = Counter("wes_data_service_pods_expired_total", "Total number of pods expired.")
 wes_data_service_messages_in_backlog = Gauge("wes_data_service_messages_in_backlog", "Number of messages currently in backlog.")
 wes_data_service_pods_in_backlog = Gauge("wes_data_service_pods_in_backlog", "Number of pods currently in backlog.")
+
+
+@dataclass
+class Delivery:
+
+    channel: pika.adapters.blocking_connection.BlockingChannel = None
+    delivery_tag: int = 0
+    routing_key: str = None
+    pod_uid: str = None
+    body: bytes = None
+
+    def ack(self):
+        self.channel.basic_ack(self.delivery_tag)
+
+    def reject(self):
+        self.channel.basic_reject(self.delivery_tag)
+
+    def __str__(self):
+        return str(self.delivery_tag)
+
+
+def consume_deliveries(channel, queue, handler):
+    def pika_handler(ch, method, properties, body):
+        handler(Delivery(
+            channel=ch,
+            delivery_tag=method.delivery_tag,
+            routing_key=method.routing_key,
+            pod_uid=properties.app_id,
+            body=body,
+        ))
+    channel.basic_consume(queue, pika_handler)
+
+
+@dataclass
+class Publishing:
+
+    body: bytes
+    properties: pika.BasicProperties = None
+
+
+class Publisher:
+
+    def __init__(self, channel):
+        self.channel = channel
+
+    def publish(self, exchange, routing_key, publishing):
+        self.channel.basic_publish(
+            exchange=exchange,
+            routing_key=routing_key,
+            properties=publishing.properties,
+            body=publishing.body,
+        )
+
+
+class PodCache:
+
+    def __init__(self):
+        self.client = redis.Redis()
+    
+    @lru_cache(maxsize=1024)
+    def get(self, key):
+        r = self.client.get(key)
+        if r is None:
+            raise KeyError(key)
+        return json.loads(r)
 
 
 class InvalidMessageError(Exception):
@@ -37,20 +102,18 @@ class MonotonicClock:
 
 
 @dataclass
-class PodState:
-
-    pod: object
-    backlog: list
-    updated_at: float
-
-
-@dataclass
 class MessageHandlerConfig:
     node: str
     vsn: str
     upload_publish_name: str
     pod_state_expire_duration: float = 7200.0
     pod_without_metadata_state_expire_duration: float = 300.0
+
+
+@dataclass
+class BacklogItem:
+    delivery: Delivery
+    received_at: float
 
 
 class MessageHandler:
@@ -69,95 +132,72 @@ class MessageHandler:
 
     logger = logging.getLogger("MessageHandler")
 
-    def __init__(self, config: MessageHandlerConfig, publisher, clock=MonotonicClock()):
+    def __init__(self, config: MessageHandlerConfig, publisher, pod_cache: PodCache, clock=MonotonicClock()):
         self.config = config
-        self.pod_state = {}
         self.publisher = publisher
         self.clock = clock
-        self.deliveries_since_handle_expired_pods = 0
+        self.pod_cache: PodCache = pod_cache
+        self.backlog = Deque[BacklogItem]()
 
-    def handle_delivery(self, delivery: amqp.Delivery):
+    def handle_delivery(self, delivery: Delivery):
         self.logger.debug("handling delivery...")
         wes_data_service_messages_handled_total.inc()
 
         if delivery.pod_uid is None:
             self.logger.debug("dropping message without pod uid")
             wes_data_service_messages_invalid_total.inc()
-            delivery.ack()
+            delivery.reject()
             return
-
-        pod_state = self.get_or_create_pod_state(delivery.pod_uid)
-
-        if pod_state.pod is None:
+        
+        if self.pod_cache[delivery.pod_uid] is None:
             self.logger.debug("adding delivery %s to backlog for %s", delivery, delivery.pod_uid)
             wes_data_service_messages_backlogged_total.inc()
             wes_data_service_messages_in_backlog.inc()
-            pod_state.backlog.append(delivery)
+            self.backlog.append(delivery)
         else:
             self.load_and_publish_message(delivery)
-            pod_state.updated_at = self.clock.now()
 
-    def handle_pod(self, pod):
-        self.logger.debug("handling pod event %s (%s)...", pod.name, pod.uid)
+    def prune_backlog(self):
+        self.logger.info("pruning backlog with %d items...", len(self.backlog))
 
-        pod_state = self.get_or_create_pod_state(pod.uid)
-        pod_state.pod = pod
-        pod_state.updated_at = self.clock.now()
+        for _ in range(len(self.backlog)):
+            item = self.backlog.popleft()
 
-        self.flush_pod_backlog(pod.uid)
-
-    def get_or_create_pod_state(self, pod_uid):
-        if pod_uid in self.pod_state:
-            return self.pod_state[pod_uid]
-        pod_state = self.new_pod_state()
-        self.pod_state[pod_uid] = pod_state
-        wes_data_service_pods_in_backlog.inc()
-        return pod_state
-
-    def handle_expired_pods(self):
-        # TODO(sean) use pod status (ex. Running) to prolong life instead of blanket timeout
-        self.logger.debug("updating pod state...")
-
-        for pod_uid in list(self.pod_state.keys()):
-            pod_state = self.pod_state[pod_uid]
-
-            if not self.pod_state_expired(pod_state):
+            # if item has pod info, publish now
+            try:
+                # check right errors here
+                self.pod_cache[item.delivery.pod_uid]
+                self.load_and_publish_message(item.delivery)
+                continue
+            except KeyError:
+                pass
+            except InvalidMessageError:
+                item.delivery.reject()
                 continue
 
-            self.logger.debug("expiring pod state for %s", pod_uid)
-            for delivery in pod_state.backlog:
-                delivery.ack()
-                wes_data_service_messages_in_backlog.dec()
-                wes_data_service_messages_expired_total.inc()
-            del self.pod_state[pod_uid]
-            wes_data_service_pods_in_backlog.dec()
-            wes_data_service_pods_expired_total.inc()
+            # TODO(sean) stand up kubernetes test dev object with all these available
 
-        self.logger.debug("updated pod state")
+            # if item has expired, drop it
+            if self.clock.now() - item.received_at > 30.0:
+                item.delivery.reject()
+                continue
 
-    def pod_state_expired(self, pod_state):
-        if pod_state.pod is None:
-            ttl = self.config.pod_without_metadata_state_expire_duration
-        else:
-            ttl = self.config.pod_state_expire_duration
-        return self.clock.now() - pod_state.updated_at > ttl
+            # otherwise, return the item to the backlog
+            self.backlog.append(item)
 
-    def flush_pod_backlog(self, pod_uid):
-        self.logger.debug("flushing pod backlog for %s...", pod_uid)
-        pod_state = self.pod_state[pod_uid]
-        if pod_state.pod is None:
-            return
-        for delivery in pod_state.backlog:
-            self.load_and_publish_message(delivery)
-            wes_data_service_messages_in_backlog.dec()
-        pod_state.backlog.clear()
-        self.logger.debug("flushed pod backlog")
+        self.logger.info("pruned backlog to %d items", len((self.backlog)))
+        # set backlog size metric here...
 
-    def load_and_publish_message(self, delivery: amqp.Delivery):
+    def load_and_publish_message(self, delivery: Delivery):
         self.logger.debug("publishing message %s...",  delivery)
 
         try:
             msg = wagglemsg.load(delivery.body)
+        except Exception:
+            self.logger.debug("failed to load waggle message: %s", delivery.body)
+            delivery.reject()
+            return
+
             update_message_with_config_metadata(msg, self.config)
             update_message_with_pod_metadata(msg, self.pod_state[delivery.pod_uid].pod)
         except Exception:
@@ -174,58 +214,15 @@ class MessageHandler:
 
         if delivery.routing_key in ["node", "all"]:
             self.logger.debug("forwarding message type %r to local", msg.name)
-            self.publisher.publish("data.topic", msg.name, amqp.Publishing(body))
+            self.publisher.publish("data.topic", msg.name, Publishing(body))
 
         if delivery.routing_key in ["beehive", "all"]:
             self.logger.debug("forwarding message type %r to beehive", msg.name)
-            publishing = amqp.Publishing(body, pika.BasicProperties(delivery_mode=2))
-            self.publisher.publish("to-beehive", msg.name, publishing)
+            self.publisher.publish("to-beehive", msg.name, Publishing(body, pika.BasicProperties(delivery_mode=2)))
 
         delivery.ack()
         self.logger.debug("published message %s",  delivery)
         wes_data_service_messages_published_total.inc()
-
-    def new_pod_state(self):
-        return PodState(pod=None, backlog=[], updated_at=self.clock.now())
-
-    def clear_backlogs_but_keep_pod_state(self):
-        for pod_state in self.pod_state.values():
-            pod_state.backlog.clear()
-        wes_data_service_messages_in_backlog.set(0)
-
-
-class Publisher:
-
-    logger = logging.getLogger("Publisher")
-
-    def __init__(self, params):
-        self.params = params
-        self._connect()
-
-    def _connect(self):
-        self.logger.debug("publisher connecting...")
-        self.connection = pika.BlockingConnection(self.params)
-        self.channel = self.connection.channel()
-        self.logger.debug("publisher connected")
-
-    def close(self):
-        self.channel.close()
-        self.connection.close()
-
-    def publish(self, exchange, routing_key, publishing):
-        while True:
-            try:
-                return self.channel.basic_publish(
-                    exchange=exchange,
-                    routing_key=routing_key,
-                    properties=publishing.properties,
-                    body=publishing.body,
-                )
-            except Exception:
-                if self.logger.isEnabledFor(logging.DEBUG):
-                    self.logger.exception("publisher failed to publish. will reconnect and retry...")
-                time.sleep(3.0)
-                self._connect()
 
 
 def update_message_with_config_metadata(msg: wagglemsg.Message, config: MessageHandlerConfig):
@@ -273,16 +270,6 @@ def declare_exchange_with_queue(ch: pika.adapters.blocking_connection.BlockingCh
     ch.exchange_declare(name, exchange_type="fanout", durable=True)
     ch.queue_declare(name, durable=True)
     ch.queue_bind(name, name)
-
-
-def load_kube_config(kubeconfig: str):
-    homeconfig = Path(Path.home(), ".kube/config").absolute()
-    if kubeconfig is not None:
-        kubernetes.config.load_kube_config(kubeconfig)
-    elif homeconfig.exists():
-        kubernetes.config.load_kube_config(str(homeconfig))
-    else:
-        kubernetes.config.load_incluster_config()
 
 
 def call_every(connection, interval, func):
@@ -365,11 +352,7 @@ def main():
         datefmt="%Y/%m/%d %H:%M:%S",
     )
     # turn down the super verbose library level logging
-    logging.getLogger("kubernetes").setLevel(logging.CRITICAL)
     logging.getLogger("pika").setLevel(logging.CRITICAL)
-
-    # NOTE the service account needs read access to pod info
-    load_kube_config(args.kubeconfig)
 
     params = pika.ConnectionParameters(
         host=args.rabbitmq_host,
@@ -419,8 +402,6 @@ def main():
             declare_exchange_with_queue(channel, "to-validator")
             declare_exchange_with_queue(channel, "to-beehive")
 
-            pod_event_watcher = es.enter_context(PluginPodEventWatcher())
-
             def forward_pod_events():
                 logging.debug("updating pod events...")
                 for pod in pod_event_watcher.ready_events():
@@ -431,7 +412,7 @@ def main():
 
             call_every(connection, 1.0, forward_pod_events)
             call_every(connection, 10.0, handler.handle_expired_pods)
-            amqp.consume(channel, "to-validator", handler.handle_delivery)
+            consume_deliveries(channel, "to-validator", handler.handle_delivery)
 
             logging.info("starting consumer...")
             try:
