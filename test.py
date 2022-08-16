@@ -1,309 +1,167 @@
 import unittest
-from unittest.mock import MagicMock
-from main import MessageHandler, MessageHandlerConfig, Publisher
-from amqp import Delivery, Publishing
-from pod_event_watcher import Pod
+import json
+import pika
+import time
+import requests
 import wagglemsg
 
+from contextlib import ExitStack
+from prometheus_client.parser import text_string_to_metric_families
+from redis import Redis
+from uuid import uuid4
+from waggle.plugin import Plugin, PluginConfig
 
-class MockClock:
 
-    def __init__(self, time):
-        self.time = time
+def get_metrics():
+    r = requests.get("http://127.0.0.1:8080")
+    r.raise_for_status()
+    return {s.name: s.value for metric in text_string_to_metric_families(r.text) for s in metric.samples if s.name.startswith("wes_")}
+
+
+def assert_metrics_deltas(tc: unittest.TestCase, before, after, want_deltas):
+    deltas = {k: after[k] - before[k] for k in before.keys()}
+    for k, v in want_deltas.items():
+        tc.assertAlmostEqual(deltas[k], v)
+
+
+def get_plugin(app_id):
+    return Plugin(PluginConfig(
+        host="127.0.0.1",
+        port=5672,
+        username="guest",
+        password="guest",
+        app_id=app_id,
+    ))
+
+
+class TestService(unittest.TestCase):
+
+    def setUp(self):
+        self.exit_stack = ExitStack()
+
+        self.redis = self.exit_stack.enter_context(Redis())
+        self.redis.flushall()
+
+        self.connection = self.exit_stack.enter_context(pika.BlockingConnection(pika.ConnectionParameters()))
+        self.channel = self.exit_stack.enter_context(self.connection.channel())
+        self.channel.queue_purge("to-validator")
+        self.channel.queue_purge("to-beehive")
+
+        # save current metrics for comparisons during tests
+        self.metrics_at_setup = get_metrics()
+
+        # save current timestamp for comparisons during tests
+        self.timestamp = time.time_ns()
     
-    def now(self):
-        return self.time
+    def tearDown(self):
+        self.exit_stack.close()
 
+    def get_messages(self, queue, num, timeout):
+        results = []
 
-class MockPublisher:
-    pass
+        def on_message_callback(ch, method, properties, body):
+            results.append(body)
+            if len(results) >= num:
+                ch.stop_consuming()
 
+        self.connection.call_later(timeout, self.channel.stop_consuming)
+        self.channel.basic_consume(queue, on_message_callback)
+        self.channel.start_consuming()
+        return results
+    
+    def assertMessages(self, queue, messages, timeout=1.0):
+        results = []
 
-def make_test_handler():
-    return MessageHandler(
-        config=MessageHandlerConfig(
-            node="0000000000000001",
-            vsn="W001",
-            upload_publish_name="upload",
-        ),
-        publisher=MockPublisher(),
-        clock=MockClock(0),
-    )
+        def on_message_callback(ch, method, properties, body):
+            results.append(wagglemsg.load(body))
+            if len(results) >= len(messages):
+                ch.stop_consuming()
 
+        self.connection.call_later(timeout, self.channel.stop_consuming)
+        self.channel.basic_consume(queue, on_message_callback)
+        self.channel.start_consuming()
 
-class TestMessageHandler(unittest.TestCase):
+        self.assertEqual(results, messages)
 
-    def test_missing_uid(self):
-        handler = make_test_handler()
-        delivery = Delivery(pod_uid=None)
+    def assertMetricsChanged(self, changes):
+        metrics = get_metrics()
+        diffs = {k: metrics[k] - self.metrics_at_setup[k] for k in metrics.keys()}
+        for k, v in changes.items():
+            self.assertAlmostEqual(diffs[k], v)
 
-        handler.publisher.publish = MagicMock()
-        delivery.ack = MagicMock()
+    def test_publish_to_beehive(self):
+        app_uid = str(uuid4())
+
+        # add pod metadata
+        self.redis.set(f"app-meta.{app_uid}", json.dumps({
+            "job": "sage",
+            "task": "testing",
+            "host": "1234.ws-nxcore",
+        }))
+
+        # publish test message
+        with get_plugin(app_uid) as plugin:
+            plugin.publish("test", 123, scope="beehive", timestamp=self.timestamp)
+
+        self.assertMessages("to-beehive", [
+            wagglemsg.Message(
+                name="test",
+                value=1234,
+                timestamp=self.timestamp,
+                meta={
+                    "job": "sage",
+                    "task": "testing",
+                    "host": "1234.ws-nxcore",
+                    "node": "0000000000000000",
+                    "vsn": "W000",
+                },
+            ),
+        ])
+
+        self.assertMetricsChanged({
+            "wes_data_service_messages_total": 1,
+            "wes_data_service_messages_rejected_total": 0,
+            "wes_data_service_messages_published_node_total": 0,
+            "wes_data_service_messages_published_beehive_total": 1,
+        })
+    
+    def test_bad_message_body(self):
+        self.channel.basic_publish("to-validator", "all", b"{bad data")
         
-        # 1. get bad delivery
-        handler.handle_delivery(delivery)
+        time.sleep(0.1)
 
-        # 2. message should not be published and should be dropped
-        handler.publisher.publish.assert_not_called()
-        delivery.ack.assert_called_once()
-    
-    def test_expect_task_label(self):
-        handler = make_test_handler()
+        self.assertMetricsChanged({
+            "wes_data_service_messages_total": 1,
+            "wes_data_service_messages_rejected_total": 1,
+            "wes_data_service_messages_published_node_total": 0,
+            "wes_data_service_messages_published_beehive_total": 0,
+        })
 
-        pod = Pod(
-            uid="some-uid",
-            image="waggle/plugin-example:1.2.3",
-            host="some-host",
-            labels={},
-        )
+    def test_no_app_uid(self):
+        with get_plugin("") as plugin:
+            plugin.publish("test", 123)
 
-        delivery = Delivery(
-            channel=None,
-            delivery_tag=0,
-            routing_key="all",
-            pod_uid=pod.uid,
-            body=wagglemsg.dump(wagglemsg.Message(
-                name="env.temperature",
-                value=23.3,
-                timestamp=123456.7,
-                meta={},
-            )),
-        )
+        time.sleep(0.1)
 
-        handler.publisher.publish = MagicMock()
-        delivery.ack = MagicMock()
+        self.assertMetricsChanged({
+            "wes_data_service_messages_total": 1,
+            "wes_data_service_messages_rejected_total": 1,
+            "wes_data_service_messages_published_node_total": 0,
+            "wes_data_service_messages_published_beehive_total": 0,
+        })
 
-        # 1. get pod without task
-        handler.handle_pod(pod)
+    def test_no_app_meta(self):
+        with get_plugin("1138528c-c36e-11e9-a1a7-42010a800198") as plugin:
+            plugin.publish("test", 123)
 
-        # 2. get delivery
-        handler.handle_delivery(delivery)
+        time.sleep(0.1)
 
-        # 3. message should not be called and should be dropped
-        handler.publisher.publish.assert_not_called()
-        delivery.ack.assert_called_once()
-
-    def test_handle_pod_then_delivery(self):
-        handler = make_test_handler()
-
-        pod = Pod(
-            uid="some-uid",
-            image="waggle/plugin-example:1.2.3",
-            host="some-host",
-            labels={
-                "sagecontinuum.org/plugin-task": "example",
-            },
-        )
-
-        msg = wagglemsg.Message(
-            name="env.temperature",
-            value=23.3,
-            timestamp=123456.7,
-            meta={},
-        )
-
-        body = wagglemsg.dump(msg)
-
-        delivery = Delivery(
-            channel=None,
-            delivery_tag=0,
-            routing_key="all",
-            pod_uid=pod.uid,
-            body=body,
-        )
-
-        handler.publisher.publish = MagicMock()
-        delivery.ack = MagicMock()
-
-        # 1. get pod
-        handler.handle_pod(pod)
-
-        # 2. get delivery
-        handler.handle_delivery(delivery)
-
-        # 3. message should be published to locally and to beehive and acked
-        self.assert_published(handler.publisher, ["data.topic", "to-beehive"], wagglemsg.Message(
-            name=msg.name,
-            value=msg.value,
-            timestamp=msg.timestamp,
-            meta={
-                "host": "some-host",
-                "job": "sage",
-                "task": "example",
-                "plugin": "plugin-example:1.2.3",
-                "node": handler.config.node,
-                "vsn": handler.config.vsn,
-            },
-        ))
-        delivery.ack.assert_called_once()
-
-    def test_handle_delivery_then_pod(self):
-        handler = make_test_handler()
-
-        pod = Pod(
-            uid="some-uid",
-            image="waggle/plugin-example:1.2.3",
-            host="some-host",
-            labels={
-                "sagecontinuum.org/plugin-task": "example",
-            },
-        )
-
-        msg = wagglemsg.Message(
-            name="env.temperature",
-            value=23.3,
-            timestamp=123456.7,
-            meta={},
-        )
-
-        body = wagglemsg.dump(msg)
-
-        delivery = Delivery(
-            channel=None,
-            delivery_tag=0,
-            routing_key="all",
-            pod_uid=pod.uid,
-            body=body,
-        )
-
-        handler.publisher.publish = MagicMock()
-        delivery.ack = MagicMock()
-
-        # 1. get delivery
-        handler.handle_delivery(delivery)
-
-        # 2. nothing should have happened yet since we don't have a pod
-        delivery.ack.assert_not_called()
-        handler.publisher.publish.assert_not_called()
-
-        # 3. delivery should still be unacked before "non metadata" expire time
-        handler.clock.time += handler.config.pod_without_metadata_state_expire_duration
-        handler.handle_expired_pods()
-        delivery.ack.assert_not_called()
-
-        # 4. get pod
-        handler.handle_pod(pod)
-
-        # 5. message should be published to locally and to beehive and acked
-        self.assert_published(handler.publisher, ["data.topic", "to-beehive"], wagglemsg.Message(
-            name=msg.name,
-            value=msg.value,
-            timestamp=msg.timestamp,
-            meta={
-                "host": "some-host",
-                "job": "sage",
-                "task": "example",
-                "plugin": "plugin-example:1.2.3",
-                "node": handler.config.node,
-                "vsn": handler.config.vsn,
-            },
-        ))
-        delivery.ack.assert_called_once()
-    
-    def test_backlog_should_expire_without_metadata(self):
-        handler = make_test_handler()
-        handler.publisher.publish = MagicMock()
-
-        # generate a bunch of deliveries
-        deliveries = []
-
-        for i in range(23):
-            delivery = Delivery(
-                channel=None,
-                delivery_tag=i,
-                routing_key="all",
-                pod_uid="some-uid",
-                body=wagglemsg.dump(wagglemsg.Message(
-                    name="env.temperature",
-                    value=23.3,
-                    timestamp=123456.7,
-                    meta={},
-                )),
-            )
-            delivery.ack = MagicMock()
-            deliveries.append(delivery)
-
-        # 1. get all deliveries over time. this should *not* delay expiration since we don't have pod metadata.
-        for delivery in deliveries:
-            handler.handle_delivery(delivery)
-            delivery.ack.assert_not_called()
-            handler.clock.time += handler.config.pod_without_metadata_state_expire_duration / len(deliveries)
-
-        # 4. deliveries should expire after one more tick
-        handler.clock.time += 1
-        handler.handle_expired_pods()
-        for delivery in deliveries:
-            delivery.ack.assert_called_once()
-
-        # 5. deliveries should be removed as to not "double expire"
-        handler.handle_expired_pods()
-        for delivery in deliveries:
-            delivery.ack.assert_called_once()
-
-        # 6. nothing should have been published
-        handler.publisher.publish.assert_not_called()
-
-    def test_stale_pod_should_expire(self):
-        handler = make_test_handler()
-
-        pod = Pod(
-            uid="some-uid",
-            image="waggle/plugin-example:1.2.3",
-            host="some-host",
-            labels={
-                "sagecontinuum.org/plugin-task": "example",
-            },
-        )
-
-        msg = wagglemsg.Message(
-            name="env.temperature",
-            value=23.3,
-            timestamp=123456.7,
-            meta={},
-        )
-
-        body = wagglemsg.dump(msg)
-
-        delivery = Delivery(
-            channel=None,
-            delivery_tag=0,
-            routing_key="all",
-            pod_uid=pod.uid,
-            body=body,
-        )
-
-        handler.publisher.publish = MagicMock()
-        delivery.ack = MagicMock()
-
-        # 1. get pod
-        handler.handle_pod(pod)
-
-        # 2. pod should expire
-        handler.clock.time += handler.config.pod_state_expire_duration + 1
-        handler.handle_expired_pods()
-
-        # 3. now that pod is expired, new delivery shouldn't be flushed right away
-        handler.handle_delivery(delivery)
-        delivery.ack.assert_not_called()
-
-        # 4. after this, delivery should expire after "without metadata" duration
-        handler.clock.time += handler.config.pod_without_metadata_state_expire_duration + 1
-        handler.handle_expired_pods()
-
-        # 5. message should not be published and should be dropped
-        handler.publisher.publish.assert_not_called()
-        delivery.ack.assert_called_once()
-
-    def assert_published(self, publisher, exchanges, msg):
-        calls = publisher.publish.call_args_list
-
-        self.assertCountEqual(exchanges, [call.args[0] for call in calls])
-
-        for call in calls:
-            _, routing_key, publishing = call.args
-            msgout = wagglemsg.load(publishing.body)
-            self.assertEqual(routing_key, msg.name)
-            self.assertEqual(msgout, msg)
+        self.assertMetricsChanged({
+            "wes_data_service_messages_total": 1,
+            "wes_data_service_messages_rejected_total": 1,
+            "wes_data_service_messages_published_node_total": 0,
+            "wes_data_service_messages_published_beehive_total": 0,
+        })
 
 
 if __name__ == "__main__":

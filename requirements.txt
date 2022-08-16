@@ -1,4 +1,4 @@
-pywagglemsg>=0.3.0
-kubernetes==22.*
+pywaggle==0.54.*
 pika==1.2.*
-prometheus-client
+redis==4.3.*
+prometheus-client==0.14.*

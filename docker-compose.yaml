@@ -1,0 +1,17 @@
+services:
+  wes-data-sharing-service:
+    build: .
+    environment:
+      - "RABBITMQ_HOST=wes-rabbitmq"
+      - "RABBITMQ_USERNAME=guest"
+      - "RABBITMQ_PASSWORD=guest"
+    ports:
+      - "127.0.0.1:8080:8080"
+  wes-rabbitmq:
+    image: rabbitmq:3.8.11-alpine
+    ports:
+      - "127.0.0.1:5672:5672"
+  wes-app-meta-cache:
+    image: redis:7.0.4
+    ports:
+      - "127.0.0.1:6379:6379"
