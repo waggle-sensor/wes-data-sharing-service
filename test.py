@@ -2,20 +2,20 @@ import unittest
 import json
 import pika
 import time
-import requests
 import wagglemsg
 
 from contextlib import ExitStack
 from prometheus_client.parser import text_string_to_metric_families
 from redis import Redis
 from uuid import uuid4
+from urllib.request import urlopen
 from waggle.plugin import Plugin, PluginConfig
 
 
 def get_metrics():
-    r = requests.get("http://127.0.0.1:8080")
-    r.raise_for_status()
-    return {s.name: s.value for metric in text_string_to_metric_families(r.text) for s in metric.samples if s.name.startswith("wes_")}
+    with urlopen("http://wes-data-sharing-service:8080") as f:
+        text = f.read().decode()
+    return {s.name: s.value for metric in text_string_to_metric_families(text) for s in metric.samples if s.name.startswith("wes_")}
 
 
 def assert_metrics_deltas(tc: unittest.TestCase, before, after, want_deltas):
@@ -26,7 +26,7 @@ def assert_metrics_deltas(tc: unittest.TestCase, before, after, want_deltas):
 
 def get_plugin(app_id):
     return Plugin(PluginConfig(
-        host="127.0.0.1",
+        host="wes-rabbitmq",
         port=5672,
         username="guest",
         password="guest",
@@ -41,10 +41,12 @@ class TestService(unittest.TestCase):
 
         self.exit_stack = ExitStack()
 
-        self.redis = self.exit_stack.enter_context(Redis())
+        self.redis = self.exit_stack.enter_context(Redis("wes-app-meta-cache"))
         self.redis.flushall()
 
-        self.connection = self.exit_stack.enter_context(pika.BlockingConnection(pika.ConnectionParameters()))
+        self.connection = self.exit_stack.enter_context(pika.BlockingConnection(pika.ConnectionParameters(
+            host="wes-rabbitmq",
+        )))
         self.channel = self.exit_stack.enter_context(self.connection.channel())
         self.channel.queue_purge("to-validator")
         self.channel.queue_purge("to-beehive")
