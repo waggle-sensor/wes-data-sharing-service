@@ -57,19 +57,6 @@ class TestService(unittest.TestCase):
     
     def tearDown(self):
         self.exit_stack.close()
-
-    def get_messages(self, queue, num, timeout):
-        results = []
-
-        def on_message_callback(ch, method, properties, body):
-            results.append(body)
-            if len(results) >= num:
-                ch.stop_consuming()
-
-        self.connection.call_later(timeout, self.channel.stop_consuming)
-        self.channel.basic_consume(queue, on_message_callback)
-        self.channel.start_consuming()
-        return results
     
     def assertMessages(self, queue, messages, timeout=1.0):
         results = []
