@@ -60,6 +60,9 @@ class TestService(unittest.TestCase):
     def tearDown(self):
         self.exit_stack.close()
     
+    def updateAppMetaCache(self, app_uid, meta):
+        self.redis.set(f"app-meta.{app_uid}", json.dumps(meta))
+
     def assertMessages(self, queue, messages, timeout=1.0):
         results = []
 
@@ -83,12 +86,11 @@ class TestService(unittest.TestCase):
     def test_publish_to_beehive(self):
         app_uid = str(uuid4())
 
-        # add pod metadata
-        self.redis.set(f"app-meta.{app_uid}", json.dumps({
+        self.updateAppMetaCache(app_uid, {
             "job": "sage",
             "task": "testing",
             "host": "1111222233334444.ws-nxcore",
-        }))
+        })
 
         # publish test message
         with get_plugin(app_uid) as plugin:
@@ -144,12 +146,11 @@ class TestService(unittest.TestCase):
     def test_publish_to_node(self):
         app_uid = str(uuid4())
 
-        # add pod metadata
-        self.redis.set(f"app-meta.{app_uid}", json.dumps({
+        self.updateAppMetaCache(app_uid, {
             "job": "sage",
             "task": "testing",
             "host": "1111222233334444.ws-nxcore",
-        }))
+        })
 
         # publish test message and make sure a subscriber receives it
         with get_plugin("") as consumer, get_plugin(app_uid) as publisher:
