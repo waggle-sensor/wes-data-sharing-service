@@ -18,12 +18,6 @@ def get_metrics():
     return {s.name: s.value for metric in text_string_to_metric_families(text) for s in metric.samples if s.name.startswith("wes_")}
 
 
-def assert_metrics_deltas(tc: unittest.TestCase, before, after, want_deltas):
-    deltas = {k: after[k] - before[k] for k in before.keys()}
-    for k, v in want_deltas.items():
-        tc.assertAlmostEqual(deltas[k], v)
-
-
 def get_plugin(app_id):
     return Plugin(PluginConfig(
         host="wes-rabbitmq",
