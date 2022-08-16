@@ -71,7 +71,7 @@ class MessageHandler:
 
         # update message app meta
         app_meta = self.app_meta_cache.get(app_uid)
-        
+
         if app_meta is None:
             self.logger.info("reject msg: no pod meta: %r", msg)
             ch.basic_reject(method.delivery_tag, False)
@@ -85,21 +85,19 @@ class MessageHandler:
         for k, v in self.system_meta.items():
             msg.meta[k] = v
 
-        self.logger.info("msg: %r", msg)
-
-        self.route_message(ch, method.routing_key, msg)
+        self.publish_message(ch, method.routing_key, msg)
         ch.basic_ack(method.delivery_tag)
     
-    def route_message(self, ch, routing_key: str, msg: wagglemsg.Message):
+    def publish_message(self, ch, routing_key: str, msg: wagglemsg.Message):
         body = wagglemsg.dump(msg)
 
         if routing_key in ["node", "all"]:
-            self.logger.debug("forwarding message type %r to node", msg.name)
+            self.logger.debug("publishing message %r to node", msg)
             ch.basic_publish("data.topic", msg.name, body)
             wes_data_service_messages_published_node_total.inc()
 
         if routing_key in ["beehive", "all"]:
-            self.logger.debug("forwarding message type %r to beehive", msg.name)
+            self.logger.debug("publishing message %r to beehive", msg)
             ch.basic_publish("to-beehive", msg.name, body)
             wes_data_service_messages_published_beehive_total.inc()
 
