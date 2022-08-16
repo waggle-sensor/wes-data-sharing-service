@@ -37,6 +37,8 @@ def get_plugin(app_id):
 class TestService(unittest.TestCase):
 
     def setUp(self):
+        self.maxDiff = 4096
+
         self.exit_stack = ExitStack()
 
         self.redis = self.exit_stack.enter_context(Redis())
@@ -96,12 +98,18 @@ class TestService(unittest.TestCase):
         self.redis.set(f"app-meta.{app_uid}", json.dumps({
             "job": "sage",
             "task": "testing",
-            "host": "1234.ws-nxcore",
+            "host": "1111222233334444.ws-nxcore",
         }))
 
         # publish test message
         with get_plugin(app_uid) as plugin:
-            plugin.publish("test", 123, scope="beehive", timestamp=self.timestamp)
+            plugin.publish(
+                name="test",
+                value=1234,
+                timestamp=self.timestamp,
+                meta={"user": "data"},
+                scope="beehive",
+            )
 
         self.assertMessages("to-beehive", [
             wagglemsg.Message(
@@ -111,9 +119,10 @@ class TestService(unittest.TestCase):
                 meta={
                     "job": "sage",
                     "task": "testing",
-                    "host": "1234.ws-nxcore",
-                    "node": "0000000000000000",
-                    "vsn": "W000",
+                    "host": "1111222233334444.ws-nxcore",
+                    "node": "0000000000000001",
+                    "vsn": "W001",
+                    "user": "data",
                 },
             ),
         ])
@@ -126,7 +135,8 @@ class TestService(unittest.TestCase):
         })
     
     def test_bad_message_body(self):
-        self.channel.basic_publish("to-validator", "all", b"{bad data")
+        app_uid = str(uuid4())
+        self.channel.basic_publish("to-validator", "all", b"{bad data", properties=pika.BasicProperties(app_id=app_uid))
         
         time.sleep(0.1)
 
@@ -151,7 +161,9 @@ class TestService(unittest.TestCase):
         })
 
     def test_no_app_meta(self):
-        with get_plugin("1138528c-c36e-11e9-a1a7-42010a800198") as plugin:
+        app_uid = str(uuid4())
+
+        with get_plugin(app_uid) as plugin:
             plugin.publish("test", 123)
 
         time.sleep(0.1)

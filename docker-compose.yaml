@@ -5,6 +5,8 @@ services:
       - "RABBITMQ_HOST=wes-rabbitmq"
       - "RABBITMQ_USERNAME=guest"
       - "RABBITMQ_PASSWORD=guest"
+      - "WAGGLE_NODE_ID=0000000000000001"
+      - "WAGGLE_NODE_VSN=W001"
     ports:
       - "127.0.0.1:8080:8080"
   wes-rabbitmq:
