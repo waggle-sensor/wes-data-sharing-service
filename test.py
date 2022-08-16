@@ -107,6 +107,12 @@ class TestService(unittest.TestCase):
                 name="test",
                 value=1234,
                 timestamp=self.timestamp,
+                scope="beehive",
+            )
+            plugin.publish(
+                name="e",
+                value=2.71828,
+                timestamp=self.timestamp,
                 meta={"user": "data"},
                 scope="beehive",
             )
@@ -122,16 +128,75 @@ class TestService(unittest.TestCase):
                     "host": "1111222233334444.ws-nxcore",
                     "node": "0000000000000001",
                     "vsn": "W001",
+                },
+            ),
+            wagglemsg.Message(
+                name="e",
+                value=2.71828,
+                timestamp=self.timestamp,
+                meta={
+                    "job": "sage",
+                    "task": "testing",
+                    "host": "1111222233334444.ws-nxcore",
+                    "node": "0000000000000001",
+                    "vsn": "W001",
                     "user": "data",
                 },
             ),
         ])
 
         self.assertMetricsChanged({
-            "wes_data_service_messages_total": 1,
+            "wes_data_service_messages_total": 2,
             "wes_data_service_messages_rejected_total": 0,
             "wes_data_service_messages_published_node_total": 0,
-            "wes_data_service_messages_published_beehive_total": 1,
+            "wes_data_service_messages_published_beehive_total": 2,
+        })
+    
+    def test_publish_to_node(self):
+        app_uid = str(uuid4())
+
+        # add pod metadata
+        self.redis.set(f"app-meta.{app_uid}", json.dumps({
+            "job": "sage",
+            "task": "testing",
+            "host": "1111222233334444.ws-nxcore",
+        }))
+
+        # publish test message and make sure a subscriber receives it
+        with get_plugin("") as consumer, get_plugin(app_uid) as publisher:
+            consumer.subscribe("#")
+
+            time.sleep(0.1)
+
+            publisher.publish(
+                name="test",
+                value=1234,
+                timestamp=self.timestamp,
+                meta={"user": "data"},
+                scope="node",
+            )
+
+            msg = consumer.get(timeout=1.0)
+
+            self.assertEqual(msg, wagglemsg.Message(
+                name="test",
+                value=1234,
+                timestamp=self.timestamp,
+                meta={
+                    "job": "sage",
+                    "task": "testing",
+                    "host": "1111222233334444.ws-nxcore",
+                    "node": "0000000000000001",
+                    "vsn": "W001",
+                    "user": "data",
+                },
+            ))
+
+        self.assertMetricsChanged({
+            "wes_data_service_messages_total": 1,
+            "wes_data_service_messages_rejected_total": 0,
+            "wes_data_service_messages_published_node_total": 1,
+            "wes_data_service_messages_published_beehive_total": 0,
         })
     
     def test_bad_message_body(self):
