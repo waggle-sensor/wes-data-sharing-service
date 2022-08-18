@@ -10,7 +10,10 @@ from redis import Redis
 from uuid import uuid4
 from urllib.request import urlopen
 from random import shuffle, randint
+from pathlib import Path
 from waggle.plugin import Plugin, PluginConfig
+
+from tempfile import TemporaryDirectory
 
 TEST_RABBITMQ_HOST = "wes-rabbitmq"
 TEST_RABBITMQ_PORT = 5672
@@ -64,8 +67,11 @@ class TestService(unittest.TestCase):
         # save current metrics for comparisons during tests
         self.metrics_at_setup = get_metrics()
 
-        # save current timestamp for comparisons during tests
-        self.timestamp = time.time_ns()
+        # NOTE(sean) this is defined in the wes-data-sharing-service's env vars in docker-compose.yaml
+        self.sys_meta = {
+            "node": "0000000000000001",
+            "vsn": "W001",
+        }
     
     def tearDown(self):
         self.exit_stack.close()
@@ -133,17 +139,12 @@ class TestService(unittest.TestCase):
         # randomize order of messages
         shuffle(messages)
 
-        # NOTE(sean) this is defined in the wes-data-sharing-service's env vars in docker-compose.yaml
-        sys_meta = {
-            "node": "0000000000000001",
-            "vsn": "W001",
-        }
-
         app_uid = str(uuid4())
         app_meta = {
             "job": f"sage-{randint(1, 1000000)}",
             "task": f"testing-{randint(1, 1000000)}",
             "host": f"{randint(1, 1000000)}.ws-nxcore",
+            "plugin": f"plugin-test:{randtag()}",
             "vsn": "should be replaced",
         }
         self.updateAppMetaCache(app_uid, app_meta)
@@ -157,7 +158,7 @@ class TestService(unittest.TestCase):
                 # NOTE(sean) the order of meta is important. we should expect:
                 # 1. sys meta overrides msg meta and app meta
                 # 2. app meta overrides msg meta
-                meta={**msg.meta, **app_meta, **sys_meta})
+                meta={**msg.meta, **app_meta, **self.sys_meta})
             for msg in messages
         ]
 
@@ -262,6 +263,57 @@ class TestService(unittest.TestCase):
             "wes_data_service_messages_published_node_total": 0,
             "wes_data_service_messages_published_beehive_total": 0,
         })
+    
+    def test_publish_upload(self):
+        # TODO(sean) clean up! added as a regression test for now.
+        app_uid = str(uuid4())
+
+        tag = randtag()
+
+        app_meta = {
+            "job": f"sage-{randint(1, 1000000)}",
+            "task": f"testing-{randint(1, 1000000)}",
+            "host": f"{randint(1, 1000000)}.ws-nxcore",
+            "plugin": f"plugin-test:{tag}",
+            "vsn": "should be replaced",
+        }
+        self.updateAppMetaCache(app_uid, app_meta)
+
+        timestamp = time.time_ns()
+        filename = "hello.txt"
+
+        with TemporaryDirectory() as dir:
+            file = Path(dir, filename)
+            file.write_text("hello")
+            with get_plugin(app_uid) as plugin:
+                plugin.upload_file(file, meta={"user": "data"}, timestamp=timestamp)
+
+        job = app_meta["job"]
+        task = app_meta["task"]
+        node = self.sys_meta["node"]
+
+        self.assertMessages("to-beehive", [wagglemsg.Message(
+            name="upload",
+            value=f"https://storage.sagecontinuum.org/api/v1/data/{job}/sage-{task}-{tag}/{node}/{timestamp}-{filename}",
+            timestamp=timestamp,
+            meta={
+                "user": "data",
+                "filename": "hello.txt",
+                **app_meta,
+                **self.sys_meta,
+            }
+        )])
+
+        self.assertMetricsChanged({
+            "wes_data_service_messages_total": 1,
+            "wes_data_service_messages_rejected_total": 0,
+            "wes_data_service_messages_published_node_total": 1,
+            "wes_data_service_messages_published_beehive_total": 1,
+        })
+
+
+def randtag():
+    return f"{randint(0, 20)}.{randint(0, 20)}.{randint(0, 20)}"
 
 
 if __name__ == "__main__":

@@ -68,15 +68,11 @@ class MessageHandler:
             wes_data_service_messages_rejected_total.inc()
             return
 
-        # handle upload message case: needs to have value changed to url
-        if msg.name == self.upload_publish_name:
-            msg = convert_to_upload_message(msg, self.upload_publish_name)
-
         # update message app meta
         app_meta = self.app_meta_cache.get(app_uid)
 
         if app_meta is None:
-            self.logger.warning("reject msg: no pod meta: %r", msg)
+            self.logger.warning("reject msg: no app meta: %r", msg)
             ch.basic_reject(method.delivery_tag, False)
             wes_data_service_messages_rejected_total.inc()
             return
@@ -87,6 +83,16 @@ class MessageHandler:
         # update message system meta
         for k, v in self.system_meta.items():
             msg.meta[k] = v
+
+        # handle upload message case: needs to have value changed to url
+        if msg.name == self.upload_publish_name:
+            try:
+                msg = convert_to_upload_message(msg, self.upload_publish_name)
+            except InvalidMessageError:
+                self.logger.warning("reject msg: bad upload message: %r", body)
+                ch.basic_reject(method.delivery_tag, False)
+                wes_data_service_messages_rejected_total.inc()
+                return
 
         self.publish_message(ch, method.routing_key, msg)
         ch.basic_ack(method.delivery_tag)
