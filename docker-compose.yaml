@@ -5,6 +5,7 @@ services:
       - "RABBITMQ_HOST=wes-rabbitmq"
       - "RABBITMQ_USERNAME=guest"
       - "RABBITMQ_PASSWORD=guest"
+      - "APP_META_CACHE_HOST=wes-app-meta-cache"
       - "WAGGLE_NODE_ID=0000000000000001"
       - "WAGGLE_NODE_VSN=W001"
     ports:

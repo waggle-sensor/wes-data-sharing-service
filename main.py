@@ -10,6 +10,9 @@ from functools import lru_cache
 from prometheus_client import start_http_server, Counter
 from redis import Redis
 
+SCOPE_ALL = "all"
+SCOPE_NODE = "node"
+SCOPE_BEEHIVE = "beehive"
 
 wes_data_service_messages_total = Counter("wes_data_service_messages_total", "Total number of messages handled.", [])
 wes_data_service_messages_rejected_total = Counter("wes_data_service_messages_rejected_total", "Total number of invalid messages.")
@@ -24,8 +27,8 @@ class InvalidMessageError(Exception):
 
 class AppMetaCache:
 
-    def __init__(self, host="wes-app-meta-cache"):
-        self.client = Redis(host)
+    def __init__(self, host, port):
+        self.client = Redis(host=host, port=port)
 
     @lru_cache(maxsize=128)
     def get(self, app_uid):
@@ -40,10 +43,10 @@ class MessageHandler:
 
     logger = logging.getLogger("MessageHandler")
 
-    def __init__(self, upload_publish_name="upload", system_meta={}):
+    def __init__(self, upload_publish_name, system_meta, app_meta_cache):
         self.upload_publish_name = upload_publish_name
         self.system_meta = system_meta
-        self.app_meta_cache = AppMetaCache("wes-app-meta-cache")
+        self.app_meta_cache = app_meta_cache
 
     def on_message_callback(self, ch, method, properties, body):
         self.logger.debug("handling delivery...")
@@ -66,7 +69,7 @@ class MessageHandler:
             return
 
         # handle upload message case: needs to have value changed to url
-        if msg.name == "upload":
+        if msg.name == self.upload_publish_name:
             msg = convert_to_upload_message(msg, self.upload_publish_name)
 
         # update message app meta
@@ -91,12 +94,12 @@ class MessageHandler:
     def publish_message(self, ch, routing_key: str, msg: wagglemsg.Message):
         body = wagglemsg.dump(msg)
 
-        if routing_key in ["node", "all"]:
+        if routing_key in [SCOPE_NODE, SCOPE_ALL]:
             self.logger.debug("publishing message %r to node", msg)
             ch.basic_publish("data.topic", msg.name, body)
             wes_data_service_messages_published_node_total.inc()
 
-        if routing_key in ["beehive", "all"]:
+        if routing_key in [SCOPE_BEEHIVE, SCOPE_ALL]:
             self.logger.debug("publishing message %r to beehive", msg)
             ch.basic_publish("to-beehive", msg.name, body)
             wes_data_service_messages_published_beehive_total.inc()
@@ -144,13 +147,8 @@ def main():
         help="measurement name to publish uploads to",
     )
     parser.add_argument(
-        "--kubeconfig",
-        default=None,
-        help="kubernetes config",
-    )
-    parser.add_argument(
         "--rabbitmq-host",
-        default=getenv("RABBITMQ_HOST", "rabbitmq-server"),
+        default=getenv("RABBITMQ_HOST", "wes-rabbitmq"),
         help="rabbitmq host",
     )
     parser.add_argument(
@@ -170,6 +168,17 @@ def main():
         help="rabbitmq password",
     )
     parser.add_argument(
+        "--app-meta-cache-host",
+        default=getenv("APP_META_CACHE_HOST", "wes-app-meta-cache"),
+        help="app meta cache host",
+    )
+    parser.add_argument(
+        "--app-meta-cache-port",
+        default=getenv("APP_META_CACHE_PORT", "6379"),
+        type=int,
+        help="app meta cache port",
+    )
+    parser.add_argument(
         "--waggle-node-id",
         default=getenv("WAGGLE_NODE_ID", "0000000000000000"),
         help="waggle node id",
@@ -184,6 +193,21 @@ def main():
         default=getenv("METRICS_PORT", "8080"),
         type=int,
         help="metrics server port",
+    )
+    parser.add_argument(
+        "--src-queue",
+        default=getenv("SRC_QUEUE", "to-validator"),
+        help="source queue to process",
+    )
+    parser.add_argument(
+        "--dst-queue-beehive",
+        default=getenv("DST_QUEUE_BEEHIVE", "to-beehive"),
+        help="destination queue for beehive",
+    )
+    parser.add_argument(
+        "--dst-exchange-node",
+        default=getenv("DST_EXCHANGE_NODE", "data.topic"),
+        help="destination exchange for node",
     )
     args = parser.parse_args()
 
@@ -202,24 +226,27 @@ def main():
             username=args.rabbitmq_username,
             password=args.rabbitmq_password,
         ),
-        client_properties={"name": "data-sharing-service"},
+        client_properties={"name": "wes-data-sharing-service"},
         connection_attempts=3,
         retry_delay=10,
         heartbeat=900,
         blocked_connection_timeout=600,
     )
 
-    logging.info("will publish uploads under name %r", args.upload_publish_name)
-    # publisher = Publisher(params)
-
     # start metrics server
+    # TODO(sean) see if this can become part of service so we can start / stop it for easier unit testing.
     start_http_server(args.metrics_port)
 
     message_handler = MessageHandler(
+        upload_publish_name=args.upload_publish_name,
         system_meta={
             "node": args.waggle_node_id,
             "vsn": args.waggle_node_vsn,
         },
+        app_meta_cache=AppMetaCache(
+            host=args.app_meta_cache_host,
+            port=args.app_meta_cache_port,
+        ),
     )
 
     with ExitStack() as es:
@@ -233,12 +260,12 @@ def main():
         channel = es.enter_context(connection.channel())
 
         logging.info("setting up queues and exchanges.")
-        channel.exchange_declare("data.topic", exchange_type="topic", durable=True)
-        declare_exchange_with_queue(channel, "to-validator")
-        declare_exchange_with_queue(channel, "to-beehive")
+        declare_exchange_with_queue(channel, args.src_queue)
+        declare_exchange_with_queue(channel, args.dst_queue_beehive)
+        channel.exchange_declare(args.dst_exchange_node, exchange_type="topic", durable=True)
 
         logging.info("starting consumer.")
-        channel.basic_consume("to-validator", message_handler.on_message_callback, auto_ack=False)
+        channel.basic_consume(args.src_queue, message_handler.on_message_callback, auto_ack=False)
         channel.start_consuming()
 
 
