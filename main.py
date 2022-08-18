@@ -89,7 +89,7 @@ class MessageHandler:
             try:
                 msg = convert_to_upload_message(msg, self.upload_publish_name)
             except InvalidMessageError:
-                self.logger.warning("reject msg: bad upload message: %r", body)
+                self.logger.warning("reject msg: bad upload message: %r", msg)
                 ch.basic_reject(method.delivery_tag, False)
                 wes_data_service_messages_rejected_total.inc()
                 return
