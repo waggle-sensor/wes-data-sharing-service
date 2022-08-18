@@ -1,309 +1,267 @@
 import unittest
-from unittest.mock import MagicMock
-from main import MessageHandler, MessageHandlerConfig, Publisher
-from amqp import Delivery, Publishing
-from pod_event_watcher import Pod
+import json
+import pika
+import time
 import wagglemsg
 
+from contextlib import ExitStack
+from prometheus_client.parser import text_string_to_metric_families
+from redis import Redis
+from uuid import uuid4
+from urllib.request import urlopen
+from random import shuffle, randint
+from waggle.plugin import Plugin, PluginConfig
 
-class MockClock:
+TEST_RABBITMQ_HOST = "wes-rabbitmq"
+TEST_RABBITMQ_PORT = 5672
+TEST_RABBITMQ_USERNAME = "guest"
+TEST_RABBITMQ_PASSWORD = "guest"
 
-    def __init__(self, time):
-        self.time = time
-    
-    def now(self):
-        return self.time
+TEST_APP_META_CACHE_HOST = "wes-app-meta-cache"
 
-
-class MockPublisher:
-    pass
-
-
-def make_test_handler():
-    return MessageHandler(
-        config=MessageHandlerConfig(
-            node="0000000000000001",
-            vsn="W001",
-            upload_publish_name="upload",
-        ),
-        publisher=MockPublisher(),
-        clock=MockClock(0),
-    )
+TEST_DATA_SHARING_SERVICE_HOST = "wes-data-sharing-service"
+TEST_DATA_SHARING_SERVICE_METRICS_PORT = 8080
 
 
-class TestMessageHandler(unittest.TestCase):
+def get_metrics():
+    with urlopen(f"http://{TEST_DATA_SHARING_SERVICE_HOST}:{TEST_DATA_SHARING_SERVICE_METRICS_PORT}") as f:
+        text = f.read().decode()
+    return {s.name: s.value for metric in text_string_to_metric_families(text) for s in metric.samples if s.name.startswith("wes_")}
 
-    def test_missing_uid(self):
-        handler = make_test_handler()
-        delivery = Delivery(pod_uid=None)
 
-        handler.publisher.publish = MagicMock()
-        delivery.ack = MagicMock()
-        
-        # 1. get bad delivery
-        handler.handle_delivery(delivery)
+def get_plugin(app_id):
+    return Plugin(PluginConfig(
+        host=TEST_RABBITMQ_HOST,
+        port=TEST_RABBITMQ_PORT,
+        username=TEST_RABBITMQ_USERNAME,
+        password=TEST_RABBITMQ_PASSWORD,
+        app_id=app_id,
+    ))
 
-        # 2. message should not be published and should be dropped
-        handler.publisher.publish.assert_not_called()
-        delivery.ack.assert_called_once()
-    
-    def test_expect_task_label(self):
-        handler = make_test_handler()
 
-        pod = Pod(
-            uid="some-uid",
-            image="waggle/plugin-example:1.2.3",
-            host="some-host",
-            labels={},
-        )
+class TestService(unittest.TestCase):
 
-        delivery = Delivery(
-            channel=None,
-            delivery_tag=0,
-            routing_key="all",
-            pod_uid=pod.uid,
-            body=wagglemsg.dump(wagglemsg.Message(
-                name="env.temperature",
-                value=23.3,
-                timestamp=123456.7,
-                meta={},
-            )),
-        )
+    def setUp(self):
+        self.maxDiff = 4096
 
-        handler.publisher.publish = MagicMock()
-        delivery.ack = MagicMock()
+        self.exit_stack = ExitStack()
 
-        # 1. get pod without task
-        handler.handle_pod(pod)
+        self.redis = self.exit_stack.enter_context(Redis(TEST_APP_META_CACHE_HOST))
+        self.redis.flushall()
 
-        # 2. get delivery
-        handler.handle_delivery(delivery)
-
-        # 3. message should not be called and should be dropped
-        handler.publisher.publish.assert_not_called()
-        delivery.ack.assert_called_once()
-
-    def test_handle_pod_then_delivery(self):
-        handler = make_test_handler()
-
-        pod = Pod(
-            uid="some-uid",
-            image="waggle/plugin-example:1.2.3",
-            host="some-host",
-            labels={
-                "sagecontinuum.org/plugin-task": "example",
-            },
-        )
-
-        msg = wagglemsg.Message(
-            name="env.temperature",
-            value=23.3,
-            timestamp=123456.7,
-            meta={},
-        )
-
-        body = wagglemsg.dump(msg)
-
-        delivery = Delivery(
-            channel=None,
-            delivery_tag=0,
-            routing_key="all",
-            pod_uid=pod.uid,
-            body=body,
-        )
-
-        handler.publisher.publish = MagicMock()
-        delivery.ack = MagicMock()
-
-        # 1. get pod
-        handler.handle_pod(pod)
-
-        # 2. get delivery
-        handler.handle_delivery(delivery)
-
-        # 3. message should be published to locally and to beehive and acked
-        self.assert_published(handler.publisher, ["data.topic", "to-beehive"], wagglemsg.Message(
-            name=msg.name,
-            value=msg.value,
-            timestamp=msg.timestamp,
-            meta={
-                "host": "some-host",
-                "job": "sage",
-                "task": "example",
-                "plugin": "plugin-example:1.2.3",
-                "node": handler.config.node,
-                "vsn": handler.config.vsn,
-            },
-        ))
-        delivery.ack.assert_called_once()
-
-    def test_handle_delivery_then_pod(self):
-        handler = make_test_handler()
-
-        pod = Pod(
-            uid="some-uid",
-            image="waggle/plugin-example:1.2.3",
-            host="some-host",
-            labels={
-                "sagecontinuum.org/plugin-task": "example",
-            },
-        )
-
-        msg = wagglemsg.Message(
-            name="env.temperature",
-            value=23.3,
-            timestamp=123456.7,
-            meta={},
-        )
-
-        body = wagglemsg.dump(msg)
-
-        delivery = Delivery(
-            channel=None,
-            delivery_tag=0,
-            routing_key="all",
-            pod_uid=pod.uid,
-            body=body,
-        )
-
-        handler.publisher.publish = MagicMock()
-        delivery.ack = MagicMock()
-
-        # 1. get delivery
-        handler.handle_delivery(delivery)
-
-        # 2. nothing should have happened yet since we don't have a pod
-        delivery.ack.assert_not_called()
-        handler.publisher.publish.assert_not_called()
-
-        # 3. delivery should still be unacked before "non metadata" expire time
-        handler.clock.time += handler.config.pod_without_metadata_state_expire_duration
-        handler.handle_expired_pods()
-        delivery.ack.assert_not_called()
-
-        # 4. get pod
-        handler.handle_pod(pod)
-
-        # 5. message should be published to locally and to beehive and acked
-        self.assert_published(handler.publisher, ["data.topic", "to-beehive"], wagglemsg.Message(
-            name=msg.name,
-            value=msg.value,
-            timestamp=msg.timestamp,
-            meta={
-                "host": "some-host",
-                "job": "sage",
-                "task": "example",
-                "plugin": "plugin-example:1.2.3",
-                "node": handler.config.node,
-                "vsn": handler.config.vsn,
-            },
-        ))
-        delivery.ack.assert_called_once()
-    
-    def test_backlog_should_expire_without_metadata(self):
-        handler = make_test_handler()
-        handler.publisher.publish = MagicMock()
-
-        # generate a bunch of deliveries
-        deliveries = []
-
-        for i in range(23):
-            delivery = Delivery(
-                channel=None,
-                delivery_tag=i,
-                routing_key="all",
-                pod_uid="some-uid",
-                body=wagglemsg.dump(wagglemsg.Message(
-                    name="env.temperature",
-                    value=23.3,
-                    timestamp=123456.7,
-                    meta={},
-                )),
+        self.connection = self.exit_stack.enter_context(pika.BlockingConnection(pika.ConnectionParameters(
+            host=TEST_RABBITMQ_HOST,
+            port=TEST_RABBITMQ_PORT,
+            credentials=pika.PlainCredentials(
+                username=TEST_RABBITMQ_USERNAME,
+                password=TEST_RABBITMQ_PASSWORD,
             )
-            delivery.ack = MagicMock()
-            deliveries.append(delivery)
+        )))
+        self.channel = self.exit_stack.enter_context(self.connection.channel())
+        self.channel.queue_purge("to-validator")
+        self.channel.queue_purge("to-beehive")
 
-        # 1. get all deliveries over time. this should *not* delay expiration since we don't have pod metadata.
-        for delivery in deliveries:
-            handler.handle_delivery(delivery)
-            delivery.ack.assert_not_called()
-            handler.clock.time += handler.config.pod_without_metadata_state_expire_duration / len(deliveries)
+        # save current metrics for comparisons during tests
+        self.metrics_at_setup = get_metrics()
 
-        # 4. deliveries should expire after one more tick
-        handler.clock.time += 1
-        handler.handle_expired_pods()
-        for delivery in deliveries:
-            delivery.ack.assert_called_once()
+        # save current timestamp for comparisons during tests
+        self.timestamp = time.time_ns()
+    
+    def tearDown(self):
+        self.exit_stack.close()
+    
+    def updateAppMetaCache(self, app_uid, meta):
+        self.redis.set(f"app-meta.{app_uid}", json.dumps(meta))
 
-        # 5. deliveries should be removed as to not "double expire"
-        handler.handle_expired_pods()
-        for delivery in deliveries:
-            delivery.ack.assert_called_once()
+    def assertMessages(self, queue, messages, timeout=1.0):
+        results = []
 
-        # 6. nothing should have been published
-        handler.publisher.publish.assert_not_called()
+        def on_message_callback(ch, method, properties, body):
+            results.append(wagglemsg.load(body))
+            if len(results) >= len(messages):
+                ch.stop_consuming()
 
-    def test_stale_pod_should_expire(self):
-        handler = make_test_handler()
+        self.connection.call_later(timeout, self.channel.stop_consuming)
+        self.channel.basic_consume(queue, on_message_callback)
+        self.channel.start_consuming()
 
-        pod = Pod(
-            uid="some-uid",
-            image="waggle/plugin-example:1.2.3",
-            host="some-host",
-            labels={
-                "sagecontinuum.org/plugin-task": "example",
-            },
-        )
+        self.assertEqual(results, messages)
 
-        msg = wagglemsg.Message(
-            name="env.temperature",
-            value=23.3,
-            timestamp=123456.7,
-            meta={},
-        )
+    def getSubscriber(self, topics):
+        subscriber = self.exit_stack.enter_context(get_plugin(""))
+        subscriber.subscribe(topics)
+        time.sleep(0.1)
+        return subscriber
 
-        body = wagglemsg.dump(msg)
+    def assertSubscriberMessages(self, subscriber, messages):
+        for msg in messages:
+            self.assertEqual(msg, subscriber.get(timeout=1.0))
 
-        delivery = Delivery(
-            channel=None,
-            delivery_tag=0,
-            routing_key="all",
-            pod_uid=pod.uid,
-            body=body,
-        )
+    def assertMetricsChanged(self, changes):
+        metrics = get_metrics()
+        diffs = {k: metrics[k] - self.metrics_at_setup[k] for k in metrics.keys()}
+        for k, v in changes.items():
+            self.assertAlmostEqual(diffs[k], v)
 
-        handler.publisher.publish = MagicMock()
-        delivery.ack = MagicMock()
+    def getPublishTestCases(self):
+        # TODO(sean) should we fuzz test this to try lot's of different arguments
+        messages = [
+            wagglemsg.Message(
+                name="test",
+                value=1234,
+                timestamp=time.time_ns(),
+                meta={},
+            ),
+            wagglemsg.Message(
+                name="e",
+                value=2.71828,
+                timestamp=time.time_ns(),
+                meta={"user": "data"},
+            ),
+            wagglemsg.Message(
+                name="replace.app.meta.with.sys.meta",
+                value="should replace meta with app and sys meta",
+                timestamp=time.time_ns(),
+                meta={
+                    "vsn": "Z123",
+                    "job": "sure",
+                    "task": "ok",
+                },
+            ),
+        ]
 
-        # 1. get pod
-        handler.handle_pod(pod)
+        # randomize order of messages
+        shuffle(messages)
 
-        # 2. pod should expire
-        handler.clock.time += handler.config.pod_state_expire_duration + 1
-        handler.handle_expired_pods()
+        # NOTE(sean) this is defined in the wes-data-sharing-service's env vars in docker-compose.yaml
+        sys_meta = {
+            "node": "0000000000000001",
+            "vsn": "W001",
+        }
 
-        # 3. now that pod is expired, new delivery shouldn't be flushed right away
-        handler.handle_delivery(delivery)
-        delivery.ack.assert_not_called()
+        app_uid = str(uuid4())
+        app_meta = {
+            "job": f"sage-{randint(1, 1000000)}",
+            "task": f"testing-{randint(1, 1000000)}",
+            "host": f"{randint(1, 1000000)}.ws-nxcore",
+            "vsn": "should be replaced",
+        }
+        self.updateAppMetaCache(app_uid, app_meta)
 
-        # 4. after this, delivery should expire after "without metadata" duration
-        handler.clock.time += handler.config.pod_without_metadata_state_expire_duration + 1
-        handler.handle_expired_pods()
+        # we expect the same messages, but with the app and sys meta tagged
+        want_messages = [
+            wagglemsg.Message(
+                name=msg.name,
+                value=msg.value,
+                timestamp=msg.timestamp,
+                # NOTE(sean) the order of meta is important. we should expect:
+                # 1. sys meta overrides msg meta and app meta
+                # 2. app meta overrides msg meta
+                meta={**msg.meta, **app_meta, **sys_meta})
+            for msg in messages
+        ]
 
-        # 5. message should not be published and should be dropped
-        handler.publisher.publish.assert_not_called()
-        delivery.ack.assert_called_once()
+        return app_uid, messages, want_messages
 
-    def assert_published(self, publisher, exchanges, msg):
-        calls = publisher.publish.call_args_list
+    def publishMessages(self, app_uid, messages, scope):
+        with get_plugin(app_uid) as plugin:
+            for msg in messages:
+                plugin.publish(msg.name, msg.value, timestamp=msg.timestamp, meta=msg.meta, scope=scope)
 
-        self.assertCountEqual(exchanges, [call.args[0] for call in calls])
+    def test_publish_beehive(self):
+        app_uid, messages, want_messages = self.getPublishTestCases()
+        self.publishMessages(app_uid, messages, scope="beehive")
+        self.assertMessages("to-beehive", want_messages)
+        self.assertMetricsChanged({
+            "wes_data_service_messages_total": len(want_messages),
+            "wes_data_service_messages_rejected_total": 0,
+            "wes_data_service_messages_published_node_total": 0,
+            "wes_data_service_messages_published_beehive_total": len(want_messages),
+        })
+    
+    def test_publish_node(self):
+        app_uid, messages, want_messages = self.getPublishTestCases()
+        subscriber = self.getSubscriber("#")
+        self.publishMessages(app_uid, messages, scope="node")
+        self.assertSubscriberMessages(subscriber, want_messages)
+        self.assertMetricsChanged({
+            "wes_data_service_messages_total": len(want_messages),
+            "wes_data_service_messages_rejected_total": 0,
+            "wes_data_service_messages_published_node_total": len(want_messages),
+            "wes_data_service_messages_published_beehive_total": 0,
+        })
 
-        for call in calls:
-            _, routing_key, publishing = call.args
-            msgout = wagglemsg.load(publishing.body)
-            self.assertEqual(routing_key, msg.name)
-            self.assertEqual(msgout, msg)
+    def test_publish_all(self):
+        app_uid, messages, want_messages = self.getPublishTestCases()
+        subscriber = self.getSubscriber("#")
+        self.publishMessages(app_uid, messages, scope="all")
+        self.assertSubscriberMessages(subscriber, want_messages)
+        self.assertMessages("to-beehive", want_messages)
+        self.assertMetricsChanged({
+            "wes_data_service_messages_total": len(want_messages),
+            "wes_data_service_messages_rejected_total": 0,
+            "wes_data_service_messages_published_node_total": len(want_messages),
+            "wes_data_service_messages_published_beehive_total": len(want_messages),
+        })
+
+    def test_subscribe_topic(self):
+        app_uid, messages, want_messages = self.getPublishTestCases()
+
+        subscriber1 = self.getSubscriber("test")
+        subscriber2 = self.getSubscriber("e")
+
+        self.publishMessages(app_uid, messages, scope="all")
+
+        self.assertSubscriberMessages(subscriber1, [msg for msg in want_messages if msg.name == "test"])
+        self.assertSubscriberMessages(subscriber2, [msg for msg in want_messages if msg.name == "e"])
+
+        self.assertMetricsChanged({
+            "wes_data_service_messages_total": len(want_messages),
+            "wes_data_service_messages_rejected_total": 0,
+            "wes_data_service_messages_published_node_total": len(want_messages),
+            "wes_data_service_messages_published_beehive_total": len(want_messages),
+        })
+
+    def test_bad_message_body(self):
+        app_uid = str(uuid4())
+        self.channel.basic_publish("to-validator", "all", b"{bad data", properties=pika.BasicProperties(app_id=app_uid))
+        
+        time.sleep(0.1)
+
+        self.assertMetricsChanged({
+            "wes_data_service_messages_total": 1,
+            "wes_data_service_messages_rejected_total": 1,
+            "wes_data_service_messages_published_node_total": 0,
+            "wes_data_service_messages_published_beehive_total": 0,
+        })
+
+    def test_no_app_uid(self):
+        with get_plugin("") as plugin:
+            plugin.publish("test", 123)
+
+        time.sleep(0.1)
+
+        self.assertMetricsChanged({
+            "wes_data_service_messages_total": 1,
+            "wes_data_service_messages_rejected_total": 1,
+            "wes_data_service_messages_published_node_total": 0,
+            "wes_data_service_messages_published_beehive_total": 0,
+        })
+
+    def test_no_app_meta(self):
+        app_uid = str(uuid4())
+
+        with get_plugin(app_uid) as plugin:
+            plugin.publish("test", 123)
+
+        time.sleep(0.1)
+
+        self.assertMetricsChanged({
+            "wes_data_service_messages_total": 1,
+            "wes_data_service_messages_rejected_total": 1,
+            "wes_data_service_messages_published_node_total": 0,
+            "wes_data_service_messages_published_beehive_total": 0,
+        })
 
 
 if __name__ == "__main__":
