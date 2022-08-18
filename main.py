@@ -55,7 +55,7 @@ class MessageHandler:
         app_uid = properties.app_id
 
         if app_uid is None:
-            self.logger.info("reject msg: no pod uid: %r", body)
+            self.logger.warning("reject msg: no pod uid: %r", body)
             ch.basic_reject(method.delivery_tag, False)
             wes_data_service_messages_rejected_total.inc()
             return
@@ -63,7 +63,7 @@ class MessageHandler:
         try:
             msg = wagglemsg.load(body)
         except Exception:
-            self.logger.info("reject msg: bad data: %r", body)
+            self.logger.warning("reject msg: bad data: %r", body)
             ch.basic_reject(method.delivery_tag, False)
             wes_data_service_messages_rejected_total.inc()
             return
@@ -76,7 +76,7 @@ class MessageHandler:
         app_meta = self.app_meta_cache.get(app_uid)
 
         if app_meta is None:
-            self.logger.info("reject msg: no pod meta: %r", msg)
+            self.logger.warning("reject msg: no pod meta: %r", msg)
             ch.basic_reject(method.delivery_tag, False)
             wes_data_service_messages_rejected_total.inc()
             return

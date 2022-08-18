@@ -8,9 +8,9 @@ The data sharing service is what makes data available both to plugins on the nod
 
 This service's primary task is to:
 
-1. Handle RabbitMQ messages published by plugins.
-3. Validate and add app metadata to messages.
-4. Republish messages local and to beehive.
+* Handle RabbitMQ messages published by plugins.
+* Validate and add app metadata to messages.
+* Republish messages local and to beehive.
 
 ## Running the Test Suite
 
