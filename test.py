@@ -9,6 +9,7 @@ from prometheus_client.parser import text_string_to_metric_families
 from redis import Redis
 from uuid import uuid4
 from urllib.request import urlopen
+from random import shuffle
 from waggle.plugin import Plugin, PluginConfig
 
 TEST_RABBITMQ_HOST = "wes-rabbitmq"
@@ -19,10 +20,11 @@ TEST_RABBITMQ_PASSWORD = "guest"
 TEST_APP_META_CACHE_HOST = "wes-app-meta-cache"
 
 TEST_DATA_SHARING_SERVICE_HOST = "wes-data-sharing-service"
+TEST_DATA_SHARING_SERVICE_METRICS_PORT = 8080
 
 
 def get_metrics():
-    with urlopen(f"http://{TEST_DATA_SHARING_SERVICE_HOST}:8080") as f:
+    with urlopen(f"http://{TEST_DATA_SHARING_SERVICE_HOST}:{TEST_DATA_SHARING_SERVICE_METRICS_PORT}") as f:
         text = f.read().decode()
     return {s.name: s.value for metric in text_string_to_metric_families(text) for s in metric.samples if s.name.startswith("wes_")}
 
@@ -127,6 +129,9 @@ class TestService(unittest.TestCase):
                 },
             ),
         ]
+
+        # randomize order of messages
+        shuffle(messages)
 
         # NOTE(sean) this is defined in the wes-data-sharing-service's env vars in docker-compose.yaml
         sys_meta = {
