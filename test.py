@@ -9,7 +9,7 @@ from prometheus_client.parser import text_string_to_metric_families
 from redis import Redis
 from uuid import uuid4
 from urllib.request import urlopen
-from random import shuffle
+from random import shuffle, randint
 from waggle.plugin import Plugin, PluginConfig
 
 TEST_RABBITMQ_HOST = "wes-rabbitmq"
@@ -141,9 +141,9 @@ class TestService(unittest.TestCase):
 
         app_uid = str(uuid4())
         app_meta = {
-            "job": "sage",
-            "task": "testing",
-            "host": "1111222233334444.ws-nxcore",
+            "job": f"sage-{randint(1, 1000000)}",
+            "task": f"testing-{randint(1, 1000000)}",
+            "host": f"{randint(1, 1000000)}.ws-nxcore",
             "vsn": "should be replaced",
         }
         self.updateAppMetaCache(app_uid, app_meta)
