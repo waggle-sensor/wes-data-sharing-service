@@ -72,7 +72,7 @@ class MessageHandler:
         app_meta = self.app_meta_cache.get(app_uid)
 
         if app_meta is None:
-            self.logger.warning("reject msg: no app meta: %r", msg)
+            self.logger.warning("reject msg: no app meta: %r %r", app_uid, msg)
             ch.basic_reject(method.delivery_tag, False)
             wes_data_service_messages_rejected_total.inc()
             return
@@ -235,8 +235,6 @@ def main():
         client_properties={"name": "wes-data-sharing-service"},
         connection_attempts=3,
         retry_delay=10,
-        heartbeat=900,
-        blocked_connection_timeout=600,
     )
 
     # start metrics server
@@ -270,7 +268,7 @@ def main():
         declare_exchange_with_queue(channel, args.dst_queue_beehive)
         channel.exchange_declare(args.dst_exchange_node, exchange_type="topic", durable=True)
 
-        logging.info("starting consumer.")
+        logging.info("starting consumer on %s.", args.src_queue)
         channel.basic_consume(args.src_queue, message_handler.on_message_callback, auto_ack=False)
         channel.start_consuming()
 
