@@ -19,13 +19,13 @@ This service fits into the app subsystem as follows:
         1. sets app meta cache:
            app uid -> app meta
 
-  (app) --------------> [app meta cache]
-    |                      |
-    | 2. publish to        |
-    |    to-validator      |
-    |    with app uid      | 3. get and tag message meta using app uid
-    |                      |
-    +-> [|||||] ------> [data sharing service] ---> 4. publish to local / beehive
+  (app) ------------------> [app meta cache]
+    |                                |
+    | 2. publish to                  |
+    |    to-validator                |
+    |    with app uid                | 3. get and tag message meta using app uid
+    |                                |
+    +-> [|||||] ----------> [data sharing service] ---> 4. publish to local / beehive
   to-validator
   queue
 ```
