@@ -25,7 +25,7 @@ This service fits into the app subsystem as follows:
     |    to-validator      |
     |    with app uid      | 3. get and tag message meta using app uid
     |                      |
-    +-> [|||||] ------> [data sharing service]
+    +-> [|||||] ------> [data sharing service] ---> 4. publish to local / beehive
   to-validator
   queue
 ```
