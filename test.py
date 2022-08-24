@@ -20,22 +20,22 @@ import threading
 
 from main import Service, AppMetaCache
 
-TEST_RABBITMQ_HOST = "127.0.0.1"
-TEST_RABBITMQ_PORT = 5672
+RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "127.0.0.1")
+RABBITMQ_PORT = int(os.environ.get("RABBITMQ_PORT", "5672"))
 
-TEST_APP_META_CACHE_HOST = "127.0.0.1"
-TEST_APP_META_CACHE_PORT = 6379
+APP_META_CACHE_HOST = os.environ.get("APP_META_CACHE_HOST", "127.0.0.1")
+APP_META_CACHE_PORT = int(os.environ.get("APP_META_CACHE_PORT", "6379"))
 
-TEST_DATA_SHARING_SERVICE_HOST = "127.0.0.1"
-TEST_DATA_SHARING_SERVICE_METRICS_PORT = 8080
+DATA_SHARING_SERVICE_HOST = os.environ.get("DATA_SHARING_SERVICE_HOST", "127.0.0.1")
+DATA_SHARING_SERVICE_METRICS_PORT = int(os.environ.get("DATA_SHARING_SERVICE_METRICS_PORT", "8080"))
 
 
 def get_service():
     service = Service(
         # rabbitmq config
         connection_parameters=pika.ConnectionParameters(
-            host=TEST_RABBITMQ_HOST,
-            port=TEST_RABBITMQ_PORT,
+            host=RABBITMQ_HOST,
+            port=RABBITMQ_PORT,
             credentials=pika.PlainCredentials(
                 username="service",
                 password="service",
@@ -55,7 +55,7 @@ def get_service():
         upload_publish_name="upload",
 
         # app meta cache config
-        app_meta_cache=AppMetaCache(TEST_APP_META_CACHE_HOST),
+        app_meta_cache=AppMetaCache(APP_META_CACHE_HOST),
 
         system_meta={
             "node": "0000000000000001",
@@ -72,8 +72,8 @@ def get_service():
 
 def get_plugin(app_id):
     return Plugin(PluginConfig(
-        host=TEST_RABBITMQ_HOST,
-        port=TEST_RABBITMQ_PORT,
+        host=RABBITMQ_HOST,
+        port=RABBITMQ_PORT,
         username="plugin",
         password="plugin",
         app_id=app_id,
@@ -81,7 +81,7 @@ def get_plugin(app_id):
 
 
 def get_metrics():
-    with urlopen(f"http://{TEST_DATA_SHARING_SERVICE_HOST}:{TEST_DATA_SHARING_SERVICE_METRICS_PORT}") as f:
+    with urlopen(f"http://{DATA_SHARING_SERVICE_HOST}:{DATA_SHARING_SERVICE_METRICS_PORT}") as f:
         text = f.read().decode()
     return {s.name: s.value for metric in text_string_to_metric_families(text) for s in metric.samples if s.name.startswith("wes_")}
 
@@ -94,13 +94,13 @@ class TestService(unittest.TestCase):
         self.service = get_service()
 
         # setup redis client to manually populate meta cache for testing
-        self.redis = self.es.enter_context(Redis(TEST_APP_META_CACHE_HOST))
+        self.redis = self.es.enter_context(Redis(APP_META_CACHE_HOST))
         self.redis.flushall()
 
         # setup rabbitmq connection to purge queues for testing
         self.connection = self.es.enter_context(pika.BlockingConnection(pika.ConnectionParameters(
-            host=TEST_RABBITMQ_HOST,
-            port=TEST_RABBITMQ_PORT,
+            host=RABBITMQ_HOST,
+            port=RABBITMQ_PORT,
             credentials=pika.PlainCredentials(
                 username="admin",
                 password="admin",
