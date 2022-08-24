@@ -2,7 +2,8 @@ all:
 
 .PHONY: test
 test:
-	python3 -m unittest -v test.py
+	docker build -t wes-data-sharing-service .
+	docker run -it --rm --network host --entrypoint=python3 wes-data-sharing-service -m unittest -v test.py
 
 .PHONY: svc-up
 svc-up:
