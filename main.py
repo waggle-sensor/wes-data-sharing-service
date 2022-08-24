@@ -68,7 +68,6 @@ class MessageHandler:
             wes_data_service_messages_rejected_total.inc()
             return
 
-        # update message app meta
         try:
             app_meta = self.app_meta_cache[app_uid]
         except KeyError:
@@ -77,7 +76,7 @@ class MessageHandler:
             wes_data_service_messages_rejected_total.inc()
             return
 
-        # update message meta with app and system meta
+        # update msg meta with app and system meta
         msg.meta.update(app_meta)
         msg.meta.update(self.system_meta)
 
