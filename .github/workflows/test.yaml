@@ -11,8 +11,6 @@ jobs:
       - uses: actions/checkout@v2
       - name: Start service containers
         run: make svc-up
-      - name: Install dependencies
-        run: pip3 install -r requirements.txt
       - name: Wait until containers are ready
         run: timeout 60 docker-compose exec -T -- wes-rabbitmq rabbitmqctl await_startup && sleep 10
       - name: Run tests
