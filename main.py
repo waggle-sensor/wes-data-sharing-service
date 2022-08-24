@@ -31,11 +31,11 @@ class AppMetaCache:
         self.client = Redis(host=host, port=port)
 
     @lru_cache(maxsize=128)
-    def get(self, app_uid):
+    def __getitem__(self, app_uid):
         key = f"app-meta.{app_uid}"
         data = self.client.get(key)
         if data is None:
-            return None
+            raise KeyError(app_uid)
         return json.loads(data)
 
 
@@ -69,9 +69,9 @@ class MessageHandler:
             return
 
         # update message app meta
-        app_meta = self.app_meta_cache.get(app_uid)
-
-        if app_meta is None:
+        try:
+            app_meta = self.app_meta_cache[app_uid]
+        except KeyError:
             self.logger.warning("reject msg: no app meta: %r %r", app_uid, msg)
             ch.basic_reject(method.delivery_tag, False)
             wes_data_service_messages_rejected_total.inc()
