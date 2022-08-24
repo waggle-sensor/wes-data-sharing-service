@@ -98,12 +98,14 @@ class MessageHandler:
 
         if routing_key in [SCOPE_NODE, SCOPE_ALL]:
             self.logger.debug("publishing message %r to node", msg)
-            ch.basic_publish("data.topic", msg.name, body)
+            properties = pika.BasicProperties(delivery_mode=pika.DeliveryMode.Transient)
+            ch.basic_publish("data.topic", msg.name, body, properties=properties)
             wes_data_service_messages_published_node_total.inc()
 
         if routing_key in [SCOPE_BEEHIVE, SCOPE_ALL]:
             self.logger.debug("publishing message %r to beehive", msg)
-            ch.basic_publish("to-beehive", msg.name, body)
+            properties = pika.BasicProperties(delivery_mode=pika.DeliveryMode.Persistent)
+            ch.basic_publish("to-beehive", msg.name, body, properties=properties)
             wes_data_service_messages_published_beehive_total.inc()
 
 
