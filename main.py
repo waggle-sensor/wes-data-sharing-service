@@ -14,7 +14,7 @@ SCOPE_ALL = "all"
 SCOPE_NODE = "node"
 SCOPE_BEEHIVE = "beehive"
 
-wes_data_service_messages_total = Counter("wes_data_service_messages_total", "Total number of messages handled.", [])
+wes_data_service_messages_total = Counter("wes_data_service_messages_total", "Total number of messages handled.")
 wes_data_service_messages_rejected_total = Counter("wes_data_service_messages_rejected_total", "Total number of invalid messages.")
 wes_data_service_messages_published_node_total = Counter("wes_data_service_messages_published_node_total", "Total number of messages published to node.")
 wes_data_service_messages_published_beehive_total = Counter("wes_data_service_messages_published_beehive_total", "Total number of messages published to beehive.")
