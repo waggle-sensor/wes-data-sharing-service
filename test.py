@@ -150,9 +150,8 @@ class TestService(unittest.TestCase):
         metrics = get_metrics()
         for k, v in want_metrics.items():
             self.assertAlmostEqual(metrics[k], v)
-
-    def getPublishTestCases(self):
-        # TODO(sean) should we fuzz test this to try lot's of different arguments
+    
+    def getCommonTestMessages(self):
         messages = [
             wagglemsg.Message(
                 name="test",
@@ -177,9 +176,12 @@ class TestService(unittest.TestCase):
                 },
             ),
         ]
-
-        # randomize order of messages
         shuffle(messages)
+        return messages
+
+    def getPublishTestCases(self):
+        # TODO(sean) should we fuzz test this to try lot's of different arguments
+        messages = self.getCommonTestMessages()
 
         app_uid = str(uuid4())
         app_meta = {
@@ -205,6 +207,23 @@ class TestService(unittest.TestCase):
         ]
 
         return app_uid, messages, want_messages
+
+    def getSystemPublishTestCases(self):
+        messages = self.getCommonTestMessages()
+
+        # we expect the same messages, but for system publishers we only want sys meta tagged
+        want_messages = [
+            wagglemsg.Message(
+                name=msg.name,
+                value=msg.value,
+                timestamp=msg.timestamp,
+                # NOTE(sean) the order of meta is important. we should expect:
+                # 1. sys meta overrides msg meta
+                meta={**msg.meta, **self.service.system_meta})
+            for msg in messages
+        ]
+
+        return messages, want_messages
 
     def publishMessages(self, app_uid, messages, scope):
         with get_plugin(app_uid) as plugin:
@@ -307,30 +326,7 @@ class TestService(unittest.TestCase):
         })
 
     def testSystemServicePublish(self):
-        messages = [
-            wagglemsg.Message(
-                name="system-message",
-                value=123,
-                meta={},
-                timestamp=time.time_ns(),
-            ),
-            wagglemsg.Message(
-                name="another-system-message",
-                value=123,
-                meta={},
-                timestamp=time.time_ns(),
-            ),
-        ]
-
-        want_messages = [
-            wagglemsg.Message(
-                name=msg.name,
-                value=msg.value,
-                timestamp=msg.timestamp,
-                # notice that there is not app meta for system users
-                meta={**msg.meta, **self.service.system_meta})
-            for msg in messages
-        ]
+        messages, want_messages = self.getSystemPublishTestCases()
 
         with ExitStack() as es:
             # TODO(sean) try to consolidate this with existing testing scaffolding
@@ -357,6 +353,34 @@ class TestService(unittest.TestCase):
             "wes_data_service_messages_rejected_total": 0,
             "wes_data_service_messages_published_node_total": len(want_messages),
             "wes_data_service_messages_published_beehive_total": len(want_messages),
+        })
+
+    def testSystemServicePublishBadUser(self):
+        messages, _ = self.getSystemPublishTestCases()
+
+        with ExitStack() as es:
+            # TODO(sean) try to consolidate this with existing testing scaffolding
+            conn = es.enter_context(pika.BlockingConnection(pika.ConnectionParameters(
+                host=RABBITMQ_HOST,
+                port=RABBITMQ_PORT,
+                credentials=pika.PlainCredentials(
+                    username="plugin",
+                    password="plugin",
+                )
+            )))
+            ch = es.enter_context(conn.channel())
+
+            for msg in messages:
+                properties = pika.BasicProperties(user_id="plugin")
+                ch.basic_publish("to-validator", "all", wagglemsg.dump(msg), properties=properties)
+
+        time.sleep(0.1)
+
+        self.assertMetrics({
+            "wes_data_service_messages_total": len(messages),
+            "wes_data_service_messages_rejected_total": len(messages),
+            "wes_data_service_messages_published_node_total": 0,
+            "wes_data_service_messages_published_beehive_total": 0,
         })
 
     def testPublishUpload(self):
