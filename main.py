@@ -101,36 +101,34 @@ class Service:
         with ExitStack() as es:
             self.stopped.clear()
             es.callback(self.stopped.set)
-            self._run(es)
 
-    def _run(self, es):
-        # register and run fresh set of metrics and metrics server
-        self.logger.info("starting metric server on %s:%d.", self.metrics_host, self.metrics_port)
-        registry = prometheus_client.CollectorRegistry()
-        self.messages_total = Counter("wes_data_service_messages_total", "Total number of messages handled.", registry=registry)
-        self.messages_rejected_total = Counter("wes_data_service_messages_rejected_total", "Total number of invalid messages.", registry=registry)
-        self.messages_published_node_total = Counter("wes_data_service_messages_published_node_total", "Total number of messages published to node.", registry=registry)
-        self.messages_published_beehive_total = Counter("wes_data_service_messages_published_beehive_total", "Total number of messages published to beehive.", registry=registry)
-        metrics_server = MetricServer(self.metrics_host, self.metrics_port, registry)
-        threading.Thread(target=metrics_server.run, daemon=True).start()
-        es.callback(metrics_server.shutdown)
+            self.logger.info("connecting consumer to rabbitmq server at %s:%d as %s.",
+                self.connection_parameters.host,
+                self.connection_parameters.port,
+                self.connection_parameters.credentials.username,
+            )
+            self.connection = es.enter_context(pika.BlockingConnection(self.connection_parameters))
+            self.channel = es.enter_context(self.connection.channel())
 
-        self.logger.info("connecting consumer to rabbitmq server at %s:%d as %s.",
-            self.connection_parameters.host,
-            self.connection_parameters.port,
-            self.connection_parameters.credentials.username,
-        )
-        self.connection = es.enter_context(pika.BlockingConnection(self.connection_parameters))
-        self.channel = es.enter_context(self.connection.channel())
+            self.logger.info("setting up queues and exchanges.")
+            declare_exchange_with_queue(self.channel, self.src_queue)
+            declare_exchange_with_queue(self.channel, self.dst_exchange_beehive)
+            self.channel.exchange_declare(self.dst_exchange_node, exchange_type="topic", durable=True)
 
-        self.logger.info("setting up queues and exchanges.")
-        declare_exchange_with_queue(self.channel, self.src_queue)
-        declare_exchange_with_queue(self.channel, self.dst_exchange_beehive)
-        self.channel.exchange_declare(self.dst_exchange_node, exchange_type="topic", durable=True)
+            # register and run fresh set of metrics and metrics server
+            self.logger.info("starting metric server on %s:%d.", self.metrics_host, self.metrics_port)
+            registry = prometheus_client.CollectorRegistry()
+            self.messages_total = Counter("wes_data_service_messages_total", "Total number of messages handled.", registry=registry)
+            self.messages_rejected_total = Counter("wes_data_service_messages_rejected_total", "Total number of invalid messages.", registry=registry)
+            self.messages_published_node_total = Counter("wes_data_service_messages_published_node_total", "Total number of messages published to node.", registry=registry)
+            self.messages_published_beehive_total = Counter("wes_data_service_messages_published_beehive_total", "Total number of messages published to beehive.", registry=registry)
+            metrics_server = MetricServer(self.metrics_host, self.metrics_port, registry)
+            threading.Thread(target=metrics_server.run, daemon=True).start()
+            es.callback(metrics_server.shutdown)
 
-        self.logger.info("starting consumer on %s.", self.src_queue)
-        self.channel.basic_consume(self.src_queue, self.on_message_callback, auto_ack=False)
-        self.channel.start_consuming()
+            self.logger.info("starting consumer on %s.", self.src_queue)
+            self.channel.basic_consume(self.src_queue, self.on_message_callback, auto_ack=False)
+            self.channel.start_consuming()
 
     def on_message_callback(self, ch, method, properties, body):
         self.logger.debug("handling delivery...")
