@@ -14,6 +14,8 @@ SCOPE_ALL = "all"
 SCOPE_NODE = "node"
 SCOPE_BEEHIVE = "beehive"
 
+# TODO(sean) move these metrics, metrics server and message handler into a self-contained service object. this will allow
+# cleaned up setup / teardown for testing.
 wes_data_service_messages_total = Counter("wes_data_service_messages_total", "Total number of messages handled.")
 wes_data_service_messages_rejected_total = Counter("wes_data_service_messages_rejected_total", "Total number of invalid messages.")
 wes_data_service_messages_published_node_total = Counter("wes_data_service_messages_published_node_total", "Total number of messages published to node.")
