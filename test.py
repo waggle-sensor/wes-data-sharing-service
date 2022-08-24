@@ -230,6 +230,24 @@ class TestService(unittest.TestCase):
             for msg in messages:
                 plugin.publish(msg.name, msg.value, timestamp=msg.timestamp, meta=msg.meta, scope=scope)
 
+    def publishSystemMessages(self, username, messages, scope):
+        with ExitStack() as es:
+            # TODO(sean) try to consolidate this with existing testing scaffolding
+            conn = es.enter_context(pika.BlockingConnection(pika.ConnectionParameters(
+                host=RABBITMQ_HOST,
+                port=RABBITMQ_PORT,
+                credentials=pika.PlainCredentials(
+                    username=username,
+                    # we're assuming password = username for test purposes
+                    password=username,
+                )
+            )))
+            ch = es.enter_context(conn.channel())
+
+            for msg in messages:
+                properties = pika.BasicProperties(user_id=username)
+                ch.basic_publish("to-validator", scope, wagglemsg.dump(msg), properties=properties)
+
     def testPublishBeehive(self):
         app_uid, messages, want_messages = self.getPublishTestCases()
         self.publishMessages(app_uid, messages, scope="beehive")
@@ -327,27 +345,9 @@ class TestService(unittest.TestCase):
 
     def testSystemServicePublish(self):
         messages, want_messages = self.getSystemPublishTestCases()
-
-        with ExitStack() as es:
-            # TODO(sean) try to consolidate this with existing testing scaffolding
-            conn = es.enter_context(pika.BlockingConnection(pika.ConnectionParameters(
-                host=RABBITMQ_HOST,
-                port=RABBITMQ_PORT,
-                credentials=pika.PlainCredentials(
-                    username="service",
-                    password="service",
-                )
-            )))
-            ch = es.enter_context(conn.channel())
-
-            for msg in messages:
-                properties = pika.BasicProperties(user_id="service")
-                ch.basic_publish("to-validator", "all", wagglemsg.dump(msg), properties=properties)
-
+        self.publishSystemMessages("service", messages, "all")
         time.sleep(0.1)
-
         self.assertMessages("to-beehive", want_messages)
-
         self.assertMetrics({
             "wes_data_service_messages_total": len(want_messages),
             "wes_data_service_messages_rejected_total": 0,
@@ -355,27 +355,10 @@ class TestService(unittest.TestCase):
             "wes_data_service_messages_published_beehive_total": len(want_messages),
         })
 
-    def testSystemServicePublishBadUser(self):
+    def testSystemServicePublishBadUserAndNoAppUID(self):
         messages, _ = self.getSystemPublishTestCases()
-
-        with ExitStack() as es:
-            # TODO(sean) try to consolidate this with existing testing scaffolding
-            conn = es.enter_context(pika.BlockingConnection(pika.ConnectionParameters(
-                host=RABBITMQ_HOST,
-                port=RABBITMQ_PORT,
-                credentials=pika.PlainCredentials(
-                    username="plugin",
-                    password="plugin",
-                )
-            )))
-            ch = es.enter_context(conn.channel())
-
-            for msg in messages:
-                properties = pika.BasicProperties(user_id="plugin")
-                ch.basic_publish("to-validator", "all", wagglemsg.dump(msg), properties=properties)
-
+        self.publishSystemMessages("plugin", messages, "all")
         time.sleep(0.1)
-
         self.assertMetrics({
             "wes_data_service_messages_total": len(messages),
             "wes_data_service_messages_rejected_total": len(messages),
