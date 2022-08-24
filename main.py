@@ -77,12 +77,9 @@ class MessageHandler:
             wes_data_service_messages_rejected_total.inc()
             return
 
-        for k, v in app_meta.items():
-            msg.meta[k] = v
-
-        # update message system meta
-        for k, v in self.system_meta.items():
-            msg.meta[k] = v
+        # update message meta with app and system meta
+        msg.meta.update(app_meta)
+        msg.meta.update(self.system_meta)
 
         # handle upload message case: needs to have value changed to url
         if msg.name == self.upload_publish_name:
