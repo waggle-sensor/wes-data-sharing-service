@@ -230,7 +230,7 @@ class TestService(unittest.TestCase):
             for msg in messages:
                 plugin.publish(msg.name, msg.value, timestamp=msg.timestamp, meta=msg.meta, scope=scope)
 
-    def publishSystemMessages(self, username, messages, scope):
+    def publishSystemMessages(self, messages, scope, username):
         with ExitStack() as es:
             # TODO(sean) try to consolidate this with existing testing scaffolding
             conn = es.enter_context(pika.BlockingConnection(pika.ConnectionParameters(
@@ -345,8 +345,9 @@ class TestService(unittest.TestCase):
 
     def testSystemServicePublish(self):
         messages, want_messages = self.getSystemPublishTestCases()
-        self.publishSystemMessages("service", messages, "all")
-        time.sleep(0.1)
+        subscriber = self.getSubscriber("#")
+        self.publishSystemMessages(messages, scope="all", username="service")
+        self.assertSubscriberMessages(subscriber, want_messages)
         self.assertMessages("to-beehive", want_messages)
         self.assertMetrics({
             "wes_data_service_messages_total": len(want_messages),
@@ -355,9 +356,9 @@ class TestService(unittest.TestCase):
             "wes_data_service_messages_published_beehive_total": len(want_messages),
         })
 
-    def testSystemServicePublishBadUserAndNoAppUID(self):
+    def testSystemServicePublishBadUser(self):
         messages, _ = self.getSystemPublishTestCases()
-        self.publishSystemMessages("plugin", messages, "all")
+        self.publishSystemMessages(messages, "all", username="plugin")
         time.sleep(0.1)
         self.assertMetrics({
             "wes_data_service_messages_total": len(messages),
