@@ -30,46 +30,6 @@ DATA_SHARING_SERVICE_HOST = os.environ.get("DATA_SHARING_SERVICE_HOST", "127.0.0
 DATA_SHARING_SERVICE_METRICS_PORT = int(os.environ.get("DATA_SHARING_SERVICE_METRICS_PORT", "8080"))
 
 
-def get_service():
-    service = Service(
-        # rabbitmq config
-        connection_parameters=pika.ConnectionParameters(
-            host=RABBITMQ_HOST,
-            port=RABBITMQ_PORT,
-            credentials=pika.PlainCredentials(
-                username="service",
-                password="service",
-            ),
-            client_properties={"name": "wes-data-sharing-service"},
-            connection_attempts=3,
-            retry_delay=10,
-        ),
-        src_queue="to-validator",
-        dst_exchange_beehive="to-beehive",
-        dst_exchange_node="data.topic",
-
-        # metrics config
-        metrics_host="0.0.0.0",
-        metrics_port=8080,
-
-        upload_publish_name="upload",
-
-        # app meta cache config
-        app_meta_cache=AppMetaCache(APP_META_CACHE_HOST),
-
-        system_meta={
-            "node": "0000000000000001",
-            "vsn": "W001",
-        },
-        system_users=["service"],
-    )
-
-    # turn off info logging for unit tests
-    service.logger.setLevel(logging.ERROR)
-
-    return service
-
-
 def get_plugin(app_id):
     return Plugin(PluginConfig(
         host=RABBITMQ_HOST,
@@ -91,11 +51,43 @@ class TestService(unittest.TestCase):
     def setUp(self):
         self.es = ExitStack()
 
-        self.service = get_service()
+        self.service = Service(
+            # rabbitmq config
+            connection_parameters=pika.ConnectionParameters(
+                host=RABBITMQ_HOST,
+                port=RABBITMQ_PORT,
+                credentials=pika.PlainCredentials(
+                    username="service",
+                    password="service",
+                ),
+                client_properties={"name": "wes-data-sharing-service"},
+                connection_attempts=3,
+                retry_delay=10,
+            ),
+            src_queue="to-validator",
+            dst_exchange_beehive="to-beehive",
+            dst_exchange_node="data.topic",
 
-        # setup redis client to manually populate meta cache for testing
-        self.redis = self.es.enter_context(Redis(APP_META_CACHE_HOST))
-        self.redis.flushall()
+            # metrics config
+            metrics_host="0.0.0.0",
+            metrics_port=8080,
+
+            upload_publish_name="upload",
+
+            # app meta cache config
+            app_meta_cache=AppMetaCache(APP_META_CACHE_HOST),
+
+            system_meta={
+                "node": "0000000000000001",
+                "vsn": "W001",
+            },
+            system_users=["service"],
+        )
+
+        # turn off info logging for unit tests
+        self.service.logger.setLevel(logging.ERROR)
+
+        self.clearAppMetaCache()
 
         # setup rabbitmq connection to purge queues for testing
         self.connection = self.es.enter_context(pika.BlockingConnection(pika.ConnectionParameters(
@@ -122,8 +114,13 @@ class TestService(unittest.TestCase):
     def tearDown(self):
         self.es.close()
 
+    def clearAppMetaCache(self):
+        with Redis(APP_META_CACHE_HOST) as redis:
+            redis.flushall()
+
     def updateAppMetaCache(self, app_uid, meta):
-        self.redis.set(f"app-meta.{app_uid}", json.dumps(meta))
+        with Redis(APP_META_CACHE_HOST) as redis:
+            redis.set(f"app-meta.{app_uid}", json.dumps(meta))
 
     def getSubscriber(self, topics):
         subscriber = self.es.enter_context(get_plugin(""))
@@ -214,7 +211,7 @@ class TestService(unittest.TestCase):
             for msg in messages:
                 plugin.publish(msg.name, msg.value, timestamp=msg.timestamp, meta=msg.meta, scope=scope)
 
-    def test_publish_beehive(self):
+    def testPublishBeehive(self):
         app_uid, messages, want_messages = self.getPublishTestCases()
         self.publishMessages(app_uid, messages, scope="beehive")
         self.assertMessages("to-beehive", want_messages)
@@ -225,7 +222,7 @@ class TestService(unittest.TestCase):
             "wes_data_service_messages_published_beehive_total": len(want_messages),
         })
     
-    def test_publish_node(self):
+    def testPublishNode(self):
         app_uid, messages, want_messages = self.getPublishTestCases()
         subscriber = self.getSubscriber("#")
         self.publishMessages(app_uid, messages, scope="node")
@@ -237,7 +234,7 @@ class TestService(unittest.TestCase):
             "wes_data_service_messages_published_beehive_total": 0,
         })
 
-    def test_publish_all(self):
+    def testPublishAll(self):
         app_uid, messages, want_messages = self.getPublishTestCases()
         subscriber = self.getSubscriber("#")
         self.publishMessages(app_uid, messages, scope="all")
@@ -250,7 +247,7 @@ class TestService(unittest.TestCase):
             "wes_data_service_messages_published_beehive_total": len(want_messages),
         })
 
-    def test_subscribe_topic(self):
+    def testSubscribeTopic(self):
         app_uid, messages, want_messages = self.getPublishTestCases()
 
         subscriber1 = self.getSubscriber("test")
@@ -268,7 +265,7 @@ class TestService(unittest.TestCase):
             "wes_data_service_messages_published_beehive_total": len(want_messages),
         })
 
-    def test_bad_message_body(self):
+    def testBadMessageBody(self):
         app_uid = str(uuid4())
         self.channel.basic_publish("to-validator", "all", b"{bad data", properties=pika.BasicProperties(app_id=app_uid))
         
@@ -281,7 +278,7 @@ class TestService(unittest.TestCase):
             "wes_data_service_messages_published_beehive_total": 0,
         })
 
-    def test_no_app_uid(self):
+    def testNoAppUID(self):
         with get_plugin("") as plugin:
             plugin.publish("test", 123)
 
@@ -294,7 +291,7 @@ class TestService(unittest.TestCase):
             "wes_data_service_messages_published_beehive_total": 0,
         })
 
-    def test_no_app_meta(self):
+    def testNoAppMeta(self):
         app_uid = str(uuid4())
 
         with get_plugin(app_uid) as plugin:
@@ -309,18 +306,7 @@ class TestService(unittest.TestCase):
             "wes_data_service_messages_published_beehive_total": 0,
         })
 
-    def test_publish_system_app(self):
-        # TODO(sean) try to consolidate this with existing testing scaffolding
-        conn = self.es.enter_context(pika.BlockingConnection(pika.ConnectionParameters(
-            host=TEST_RABBITMQ_HOST,
-            port=TEST_RABBITMQ_PORT,
-            credentials=pika.PlainCredentials(
-                username="service",
-                password="service",
-            )
-        )))
-        ch = self.es.enter_context(conn.channel())
-
+    def testSystemServicePublish(self):
         messages = [
             wagglemsg.Message(
                 name="system-message",
@@ -346,9 +332,21 @@ class TestService(unittest.TestCase):
             for msg in messages
         ]
 
-        for msg in messages:
-            properties = pika.BasicProperties(user_id="service")
-            ch.basic_publish("to-validator", "all", wagglemsg.dump(msg), properties=properties)
+        with ExitStack() as es:
+            # TODO(sean) try to consolidate this with existing testing scaffolding
+            conn = es.enter_context(pika.BlockingConnection(pika.ConnectionParameters(
+                host=RABBITMQ_HOST,
+                port=RABBITMQ_PORT,
+                credentials=pika.PlainCredentials(
+                    username="service",
+                    password="service",
+                )
+            )))
+            ch = es.enter_context(conn.channel())
+
+            for msg in messages:
+                properties = pika.BasicProperties(user_id="service")
+                ch.basic_publish("to-validator", "all", wagglemsg.dump(msg), properties=properties)
 
         time.sleep(0.1)
 
@@ -361,7 +359,7 @@ class TestService(unittest.TestCase):
             "wes_data_service_messages_published_beehive_total": len(want_messages),
         })
 
-    def test_publish_upload(self):
+    def testPublishUpload(self):
         # TODO(sean) clean up! added as a regression test for now.
         app_uid = str(uuid4())
 

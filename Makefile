@@ -2,7 +2,7 @@ all:
 
 .PHONY: test
 test:
-	python3 test.py
+	python3 -m unittest -v test.py
 
 .PHONY: svc-up
 svc-up:

@@ -90,11 +90,13 @@ class Service:
         self.app_meta_cache = app_meta_cache
         self.system_users = system_users
 
+        self.connected = threading.Event()
         self.stopped = threading.Event()
+        self.stopped.set()
 
     def shutdown(self):
-        if self.connection is not None:
-            self.connection.add_callback_threadsafe(self.channel.stop_consuming)
+        self.connected.wait()
+        self.connection.add_callback_threadsafe(self.connection.close)
         self.stopped.wait()
 
     def run(self):
@@ -109,6 +111,7 @@ class Service:
             )
             self.connection = es.enter_context(pika.BlockingConnection(self.connection_parameters))
             self.channel = es.enter_context(self.connection.channel())
+            self.connected.set()
 
             self.logger.info("setting up queues and exchanges.")
             declare_exchange_with_queue(self.channel, self.src_queue)
