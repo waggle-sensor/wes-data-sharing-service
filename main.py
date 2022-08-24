@@ -2,24 +2,19 @@ import argparse
 import logging
 import json
 import pika
+import prometheus_client
+import threading
 import wagglemsg
 
 from contextlib import ExitStack
 from os import getenv
 from functools import lru_cache
-from prometheus_client import start_http_server, Counter
+from prometheus_client import Counter
 from redis import Redis
 
 SCOPE_ALL = "all"
 SCOPE_NODE = "node"
 SCOPE_BEEHIVE = "beehive"
-
-# TODO(sean) move these metrics, metrics server and message handler into a self-contained service object. this will allow
-# cleaner setup / teardown for unit testing.
-wes_data_service_messages_total = Counter("wes_data_service_messages_total", "Total number of messages handled.")
-wes_data_service_messages_rejected_total = Counter("wes_data_service_messages_rejected_total", "Total number of invalid messages.")
-wes_data_service_messages_published_node_total = Counter("wes_data_service_messages_published_node_total", "Total number of messages published to node.")
-wes_data_service_messages_published_beehive_total = Counter("wes_data_service_messages_published_beehive_total", "Total number of messages published to beehive.")
 
 
 class InvalidMessageError(Exception):
@@ -29,7 +24,7 @@ class InvalidMessageError(Exception):
 
 class AppMetaCache:
 
-    def __init__(self, host, port):
+    def __init__(self, host="127.0.0.1", port=6379):
         self.client = Redis(host=host, port=port)
 
     @lru_cache(maxsize=128)
@@ -41,25 +36,112 @@ class AppMetaCache:
         return json.loads(data)
 
 
-class MessageHandler:
+class MetricServer:
 
-    logger = logging.getLogger("MessageHandler")
+    def __init__(self, host, port, registry):
+        from wsgiref.simple_server import make_server, WSGIRequestHandler
 
-    def __init__(self, upload_publish_name, system_meta, app_meta_cache):
+        class SilentHandler(WSGIRequestHandler):
+            def log_message(self, format, *args):
+                pass
+
+        app = prometheus_client.make_wsgi_app(registry)
+        self.httpd = make_server(host, port, app, handler_class=SilentHandler)
+
+    def run(self):
+        self.httpd.serve_forever()
+
+    def shutdown(self):
+        try:
+            self.httpd.shutdown()
+        finally:
+            self.httpd.server_close()
+
+
+class Service:
+
+    logger = logging.getLogger("Service")
+
+    def __init__(
+        self,
+        connection_parameters,
+        src_queue,
+        dst_exchange_beehive,
+        dst_exchange_node,
+        metrics_host,
+        metrics_port,
+        upload_publish_name,
+        system_meta,
+        app_meta_cache,
+        system_users,
+        ):
+
+        self.connection_parameters = connection_parameters
+        self.src_queue = src_queue
+        self.dst_exchange_beehive = dst_exchange_beehive
+        self.dst_exchange_node = dst_exchange_node
+        self.connection = None
+
+        self.metrics_host = metrics_host
+        self.metrics_port = metrics_port
+
         self.upload_publish_name = upload_publish_name
         self.system_meta = system_meta
         self.app_meta_cache = app_meta_cache
+        self.system_users = system_users
+
+        self.stopped = threading.Event()
+
+    def shutdown(self):
+        if self.connection is not None:
+            self.connection.add_callback_threadsafe(self.channel.stop_consuming)
+        self.stopped.wait()
+
+    def run(self):
+        with ExitStack() as es:
+            self.stopped.clear()
+            es.callback(self.stopped.set)
+            self._run(es)
+
+    def _run(self, es):
+        # register and run fresh set of metrics and metrics server
+        self.logger.info("starting metric server on %s:%d.", self.metrics_host, self.metrics_port)
+        registry = prometheus_client.CollectorRegistry()
+        self.messages_total = Counter("wes_data_service_messages_total", "Total number of messages handled.", registry=registry)
+        self.messages_rejected_total = Counter("wes_data_service_messages_rejected_total", "Total number of invalid messages.", registry=registry)
+        self.messages_published_node_total = Counter("wes_data_service_messages_published_node_total", "Total number of messages published to node.", registry=registry)
+        self.messages_published_beehive_total = Counter("wes_data_service_messages_published_beehive_total", "Total number of messages published to beehive.", registry=registry)
+        metrics_server = MetricServer(self.metrics_host, self.metrics_port, registry)
+        threading.Thread(target=metrics_server.run, daemon=True).start()
+        es.callback(metrics_server.shutdown)
+
+        self.logger.info("connecting consumer to rabbitmq server at %s:%d as %s.",
+            self.connection_parameters.host,
+            self.connection_parameters.port,
+            self.connection_parameters.credentials.username,
+        )
+        self.connection = es.enter_context(pika.BlockingConnection(self.connection_parameters))
+        self.channel = es.enter_context(self.connection.channel())
+
+        self.logger.info("setting up queues and exchanges.")
+        declare_exchange_with_queue(self.channel, self.src_queue)
+        declare_exchange_with_queue(self.channel, self.dst_exchange_beehive)
+        self.channel.exchange_declare(self.dst_exchange_node, exchange_type="topic", durable=True)
+
+        self.logger.info("starting consumer on %s.", self.src_queue)
+        self.channel.basic_consume(self.src_queue, self.on_message_callback, auto_ack=False)
+        self.channel.start_consuming()
 
     def on_message_callback(self, ch, method, properties, body):
         self.logger.debug("handling delivery...")
-        wes_data_service_messages_total.inc()
+        self.messages_total.inc()
 
         app_uid = properties.app_id
 
-        if app_uid is None:
+        if app_uid is None and properties.user_id is None:
             self.logger.warning("reject msg: no pod uid: %r", body)
             ch.basic_reject(method.delivery_tag, False)
-            wes_data_service_messages_rejected_total.inc()
+            self.messages_rejected_total.inc()
             return
 
         try:
@@ -67,19 +149,22 @@ class MessageHandler:
         except Exception:
             self.logger.warning("reject msg: bad data: %r", body)
             ch.basic_reject(method.delivery_tag, False)
-            wes_data_service_messages_rejected_total.inc()
+            self.messages_rejected_total.inc()
             return
 
-        try:
-            app_meta = self.app_meta_cache[app_uid]
-        except KeyError:
-            self.logger.warning("reject msg: no app meta: %r %r", app_uid, msg)
-            ch.basic_reject(method.delivery_tag, False)
-            wes_data_service_messages_rejected_total.inc()
-            return
+        # update app meta using app meta cache if not system user
+        if properties.user_id not in self.system_users:
+            try:
+                app_meta = self.app_meta_cache[app_uid]
+            except KeyError:
+                self.logger.warning("reject msg: no app meta: %r %r", app_uid, msg)
+                ch.basic_reject(method.delivery_tag, False)
+                self.messages_rejected_total.inc()
+                return
 
-        # update msg meta with app and system meta
-        msg.meta.update(app_meta)
+            msg.meta.update(app_meta)
+
+        # update system metadata
         msg.meta.update(self.system_meta)
 
         # handle upload message case: needs to have value changed to url
@@ -89,12 +174,12 @@ class MessageHandler:
             except InvalidMessageError:
                 self.logger.warning("reject msg: bad upload message: %r", msg)
                 ch.basic_reject(method.delivery_tag, False)
-                wes_data_service_messages_rejected_total.inc()
+                self.messages_rejected_total.inc()
                 return
 
         self.publish_message(ch, method.routing_key, msg)
         ch.basic_ack(method.delivery_tag)
-    
+
     def publish_message(self, ch, routing_key: str, msg: wagglemsg.Message):
         body = wagglemsg.dump(msg)
 
@@ -102,13 +187,13 @@ class MessageHandler:
             self.logger.debug("publishing message %r to node", msg)
             properties = pika.BasicProperties(delivery_mode=pika.DeliveryMode.Transient)
             ch.basic_publish("data.topic", msg.name, body, properties=properties)
-            wes_data_service_messages_published_node_total.inc()
+            self.messages_published_node_total.inc()
 
         if routing_key in [SCOPE_BEEHIVE, SCOPE_ALL]:
             self.logger.debug("publishing message %r to beehive", msg)
             properties = pika.BasicProperties(delivery_mode=pika.DeliveryMode.Persistent)
             ch.basic_publish("to-beehive", msg.name, body, properties=properties)
-            wes_data_service_messages_published_beehive_total.inc()
+            self.messages_published_beehive_total.inc()
 
 
 def convert_to_upload_message(msg: wagglemsg.Message, upload_publish_name: str) -> wagglemsg.Message:
@@ -195,6 +280,11 @@ def main():
         help="waggle node vsn",
     )
     parser.add_argument(
+        "--metrics-host",
+        default=getenv("METRICS_HOST", "0.0.0.0"),
+        help="metrics server host",
+    )
+    parser.add_argument(
         "--metrics-port",
         default=getenv("METRICS_PORT", "8080"),
         type=int,
@@ -206,16 +296,23 @@ def main():
         help="source queue to process",
     )
     parser.add_argument(
-        "--dst-queue-beehive",
+        "--dst-exchange-beehive",
         default=getenv("DST_QUEUE_BEEHIVE", "to-beehive"),
-        help="destination queue for beehive",
+        help="destination exchange for beehive",
     )
     parser.add_argument(
         "--dst-exchange-node",
         default=getenv("DST_EXCHANGE_NODE", "data.topic"),
         help="destination exchange for node",
     )
+    parser.add_argument(
+        "--system-users",
+        default=getenv("SYSTEM_USERS", ""),
+        help="space separated list of system users. system users do not update their meta against the app meta cache",
+    )
     args = parser.parse_args()
+
+    system_users = args.system_users.split()
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
@@ -225,52 +322,43 @@ def main():
     # turn down the super verbose library level logging
     logging.getLogger("pika").setLevel(logging.CRITICAL)
 
-    params = pika.ConnectionParameters(
-        host=args.rabbitmq_host,
-        port=args.rabbitmq_port,
-        credentials=pika.PlainCredentials(
-            username=args.rabbitmq_username,
-            password=args.rabbitmq_password,
+    service = Service(
+        # rabbitmq config
+        connection_parameters=pika.ConnectionParameters(
+            host=args.rabbitmq_host,
+            port=args.rabbitmq_port,
+            credentials=pika.PlainCredentials(
+                username=args.rabbitmq_username,
+                password=args.rabbitmq_password,
+            ),
+            client_properties={"name": "wes-data-sharing-service"},
+            connection_attempts=3,
+            retry_delay=10,
         ),
-        client_properties={"name": "wes-data-sharing-service"},
-        connection_attempts=3,
-        retry_delay=10,
-    )
+        src_queue=args.src_queue,
+        dst_exchange_beehive=args.dst_exchange_beehive,
+        dst_exchange_node=args.dst_exchange_node,
 
-    # start metrics server
-    # TODO(sean) see if this can become part of service so we can start / stop it for easier unit testing.
-    start_http_server(args.metrics_port)
+        # metrics config
+        metrics_host=args.metrics_host,
+        metrics_port=args.metrics_port,
 
-    message_handler = MessageHandler(
+        # app meta cache config
+        app_meta_cache=AppMetaCache(
+            host=args.app_meta_cache_host,
+            port=args.app_meta_cache_port,
+        ),
+
+        # service specific config
         upload_publish_name=args.upload_publish_name,
         system_meta={
             "node": args.waggle_node_id,
             "vsn": args.waggle_node_vsn,
         },
-        app_meta_cache=AppMetaCache(
-            host=args.app_meta_cache_host,
-            port=args.app_meta_cache_port,
-        ),
+        system_users=system_users,
     )
 
-    with ExitStack() as es:
-        logging.info("connecting consumer to rabbitmq server at %s:%d as %s.",
-            params.host,
-            params.port,
-            params.credentials.username,
-        )
-
-        connection = es.enter_context(pika.BlockingConnection(params))
-        channel = es.enter_context(connection.channel())
-
-        logging.info("setting up queues and exchanges.")
-        declare_exchange_with_queue(channel, args.src_queue)
-        declare_exchange_with_queue(channel, args.dst_queue_beehive)
-        channel.exchange_declare(args.dst_exchange_node, exchange_type="topic", durable=True)
-
-        logging.info("starting consumer on %s.", args.src_queue)
-        channel.basic_consume(args.src_queue, message_handler.on_message_callback, auto_ack=False)
-        channel.start_consuming()
+    service.run()
 
 
 if __name__ == "__main__":

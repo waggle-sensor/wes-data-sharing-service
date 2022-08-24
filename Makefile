@@ -2,11 +2,11 @@ all:
 
 .PHONY: test
 test:
-	docker-compose exec -T -- wes-data-sharing-service python3 test.py
+	python3 test.py
 
 .PHONY: svc-up
 svc-up:
-	docker-compose up -d --build
+	docker-compose up -d
 
 .PHONY: svc-down
 svc-down:
