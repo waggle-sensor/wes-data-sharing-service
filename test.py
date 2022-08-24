@@ -132,6 +132,7 @@ class TestService(unittest.TestCase):
         results = []
 
         def on_message_callback(ch, method, properties, body):
+            self.assertEqual(properties.delivery_mode, pika.DeliveryMode.Persistent.value)
             results.append(wagglemsg.load(body))
             if len(results) >= len(messages):
                 ch.stop_consuming()
