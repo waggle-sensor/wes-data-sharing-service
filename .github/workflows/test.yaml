@@ -17,6 +17,6 @@ jobs:
       - name: Install dependencies
         run: pip3 install -r requirements.txt
       - name: Wait until containers are ready
-        run: timeout 60 docker-compose exec -T -- wes-rabbitmq rabbitmqctl await_startup
+        run: timeout 60 docker-compose exec -T -- wes-rabbitmq rabbitmqctl await_startup && sleep 10
       - name: Run tests
         run: make test

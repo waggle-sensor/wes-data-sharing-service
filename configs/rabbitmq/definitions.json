@@ -43,5 +43,59 @@
             "write": ".*",
             "read": ".*"
         }
+    ],
+    "queues": [
+        {
+            "name": "to-validator",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {}
+        },
+        {
+            "name": "to-beehive",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {}
+        }
+    ],
+    "exchanges": [
+        {
+            "name": "to-validator",
+            "vhost": "/",
+            "type": "fanout",
+            "durable": true,
+            "auto_delete": false,
+            "internal": false,
+            "arguments": {}
+        },
+        {
+            "name": "to-beehive",
+            "vhost": "/",
+            "type": "fanout",
+            "durable": true,
+            "auto_delete": false,
+            "internal": false,
+            "arguments": {}
+        }
+    ],
+    "bindings": [
+        {
+            "source": "to-validator",
+            "vhost": "/",
+            "destination": "to-validator",
+            "destination_type": "queue",
+            "routing_key": "",
+            "arguments": {}
+        },
+        {
+            "source": "to-beehive",
+            "vhost": "/",
+            "destination": "to-beehive",
+            "destination_type": "queue",
+            "routing_key": "",
+            "arguments": {}
+        }
     ]
 }

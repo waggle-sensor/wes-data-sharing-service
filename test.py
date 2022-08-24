@@ -91,10 +91,7 @@ class TestService(unittest.TestCase):
     def setUp(self):
         self.es = ExitStack()
 
-        # setup new background instance of service for testing
         self.service = get_service()
-        threading.Thread(target=self.service.run, daemon=True).start()
-        self.es.callback(self.service.shutdown)
 
         # setup redis client to manually populate meta cache for testing
         self.redis = self.es.enter_context(Redis(TEST_APP_META_CACHE_HOST))
@@ -117,6 +114,10 @@ class TestService(unittest.TestCase):
         # NOTE(sean) pywaggle uses /run/waggle as WAGGLE_PLUGIN_UPLOAD_PATH default. we hack this for now so we can run these unit tests.
         self.upload_dir = self.es.enter_context(TemporaryDirectory())
         os.environ["WAGGLE_PLUGIN_UPLOAD_PATH"] = str(Path(self.upload_dir).absolute())
+
+        # run new background instance of service for testing
+        threading.Thread(target=self.service.run, daemon=True).start()
+        self.es.callback(self.service.shutdown)
 
     def tearDown(self):
         self.es.close()
