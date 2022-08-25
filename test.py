@@ -75,7 +75,7 @@ class TestService(unittest.TestCase):
             upload_publish_name="upload",
 
             # app meta cache config
-            app_meta_cache=AppMetaCache(APP_META_CACHE_HOST),
+            app_meta_cache=AppMetaCache(APP_META_CACHE_HOST, APP_META_CACHE_PORT),
 
             system_meta={
                 "node": "0000000000000001",
