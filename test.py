@@ -1,5 +1,7 @@
 import unittest
 import json
+import logging
+import os
 import pika
 import time
 import wagglemsg
@@ -14,75 +16,123 @@ from pathlib import Path
 from waggle.plugin import Plugin, PluginConfig
 
 from tempfile import TemporaryDirectory
+import threading
 
-TEST_RABBITMQ_HOST = "wes-rabbitmq"
-TEST_RABBITMQ_PORT = 5672
-TEST_RABBITMQ_USERNAME = "guest"
-TEST_RABBITMQ_PASSWORD = "guest"
+from main import Service, AppMetaCache
 
-TEST_APP_META_CACHE_HOST = "wes-app-meta-cache"
+RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "127.0.0.1")
+RABBITMQ_PORT = int(os.environ.get("RABBITMQ_PORT", "5672"))
 
-TEST_DATA_SHARING_SERVICE_HOST = "wes-data-sharing-service"
-TEST_DATA_SHARING_SERVICE_METRICS_PORT = 8080
+APP_META_CACHE_HOST = os.environ.get("APP_META_CACHE_HOST", "127.0.0.1")
+APP_META_CACHE_PORT = int(os.environ.get("APP_META_CACHE_PORT", "6379"))
 
-
-def get_metrics():
-    with urlopen(f"http://{TEST_DATA_SHARING_SERVICE_HOST}:{TEST_DATA_SHARING_SERVICE_METRICS_PORT}") as f:
-        text = f.read().decode()
-    return {s.name: s.value for metric in text_string_to_metric_families(text) for s in metric.samples if s.name.startswith("wes_")}
+DATA_SHARING_SERVICE_HOST = os.environ.get("DATA_SHARING_SERVICE_HOST", "127.0.0.1")
+DATA_SHARING_SERVICE_METRICS_PORT = int(os.environ.get("DATA_SHARING_SERVICE_METRICS_PORT", "8080"))
 
 
 def get_plugin(app_id):
     return Plugin(PluginConfig(
-        host=TEST_RABBITMQ_HOST,
-        port=TEST_RABBITMQ_PORT,
-        username=TEST_RABBITMQ_USERNAME,
-        password=TEST_RABBITMQ_PASSWORD,
+        host=RABBITMQ_HOST,
+        port=RABBITMQ_PORT,
+        username="plugin",
+        password="plugin",
         app_id=app_id,
     ))
+
+
+def get_metrics():
+    with urlopen(f"http://{DATA_SHARING_SERVICE_HOST}:{DATA_SHARING_SERVICE_METRICS_PORT}") as f:
+        text = f.read().decode()
+    return {s.name: s.value for metric in text_string_to_metric_families(text) for s in metric.samples if s.name.startswith("wes_")}
 
 
 class TestService(unittest.TestCase):
 
     def setUp(self):
-        self.maxDiff = 4096
+        self.es = ExitStack()
 
-        self.exit_stack = ExitStack()
+        self.service = Service(
+            # rabbitmq config
+            connection_parameters=pika.ConnectionParameters(
+                host=RABBITMQ_HOST,
+                port=RABBITMQ_PORT,
+                credentials=pika.PlainCredentials(
+                    username="service",
+                    password="service",
+                ),
+                client_properties={"name": "wes-data-sharing-service"},
+                connection_attempts=3,
+                retry_delay=10,
+            ),
+            src_queue="to-validator",
+            dst_exchange_beehive="to-beehive",
+            dst_exchange_node="data.topic",
 
-        self.redis = self.exit_stack.enter_context(Redis(TEST_APP_META_CACHE_HOST))
-        self.redis.flushall()
+            # metrics config
+            metrics_host="0.0.0.0",
+            metrics_port=8080,
 
-        self.connection = self.exit_stack.enter_context(pika.BlockingConnection(pika.ConnectionParameters(
-            host=TEST_RABBITMQ_HOST,
-            port=TEST_RABBITMQ_PORT,
+            upload_publish_name="upload",
+
+            # app meta cache config
+            app_meta_cache=AppMetaCache(APP_META_CACHE_HOST, APP_META_CACHE_PORT),
+
+            system_meta={
+                "node": "0000000000000001",
+                "vsn": "W001",
+            },
+            system_users=["service"],
+        )
+
+        # turn off info logging for unit tests
+        self.service.logger.setLevel(logging.ERROR)
+
+        self.clearAppMetaCache()
+
+        # setup rabbitmq connection to purge queues for testing
+        self.connection = self.es.enter_context(pika.BlockingConnection(pika.ConnectionParameters(
+            host=RABBITMQ_HOST,
+            port=RABBITMQ_PORT,
             credentials=pika.PlainCredentials(
-                username=TEST_RABBITMQ_USERNAME,
-                password=TEST_RABBITMQ_PASSWORD,
+                username="admin",
+                password="admin",
             )
         )))
-        self.channel = self.exit_stack.enter_context(self.connection.channel())
-        self.channel.queue_purge("to-validator")
-        self.channel.queue_purge("to-beehive")
+        self.channel = self.es.enter_context(self.connection.channel())
+        self.channel.queue_purge(self.service.src_queue)
+        self.channel.queue_purge(self.service.dst_exchange_beehive)
 
-        # save current metrics for comparisons during tests
-        self.metrics_at_setup = get_metrics()
+        # setup upload dir
+        # NOTE(sean) pywaggle uses /run/waggle as WAGGLE_PLUGIN_UPLOAD_PATH default. we hack this for now so we can run these unit tests.
+        self.upload_dir = self.es.enter_context(TemporaryDirectory())
+        os.environ["WAGGLE_PLUGIN_UPLOAD_PATH"] = str(Path(self.upload_dir).absolute())
 
-        # NOTE(sean) this is defined in the wes-data-sharing-service's env vars in docker-compose.yaml
-        self.sys_meta = {
-            "node": "0000000000000001",
-            "vsn": "W001",
-        }
-    
+        # run new background instance of service for testing
+        threading.Thread(target=self.service.run, daemon=True).start()
+        self.es.callback(self.service.shutdown)
+
     def tearDown(self):
-        self.exit_stack.close()
-    
+        self.es.close()
+
+    def clearAppMetaCache(self):
+        with Redis(APP_META_CACHE_HOST) as redis:
+            redis.flushall()
+
     def updateAppMetaCache(self, app_uid, meta):
-        self.redis.set(f"app-meta.{app_uid}", json.dumps(meta))
+        with Redis(APP_META_CACHE_HOST) as redis:
+            redis.set(f"app-meta.{app_uid}", json.dumps(meta))
+
+    def getSubscriber(self, topics):
+        subscriber = self.es.enter_context(get_plugin(""))
+        subscriber.subscribe(topics)
+        time.sleep(0.1)
+        return subscriber
 
     def assertMessages(self, queue, messages, timeout=1.0):
         results = []
 
         def on_message_callback(ch, method, properties, body):
+            self.assertEqual(properties.delivery_mode, pika.DeliveryMode.Persistent.value)
             results.append(wagglemsg.load(body))
             if len(results) >= len(messages):
                 ch.stop_consuming()
@@ -93,24 +143,16 @@ class TestService(unittest.TestCase):
 
         self.assertEqual(results, messages)
 
-    def getSubscriber(self, topics):
-        subscriber = self.exit_stack.enter_context(get_plugin(""))
-        subscriber.subscribe(topics)
-        time.sleep(0.1)
-        return subscriber
-
     def assertSubscriberMessages(self, subscriber, messages):
         for msg in messages:
             self.assertEqual(msg, subscriber.get(timeout=1.0))
 
-    def assertMetricsChanged(self, changes):
+    def assertMetrics(self, want_metrics):
         metrics = get_metrics()
-        diffs = {k: metrics[k] - self.metrics_at_setup[k] for k in metrics.keys()}
-        for k, v in changes.items():
-            self.assertAlmostEqual(diffs[k], v)
-
-    def getPublishTestCases(self):
-        # TODO(sean) should we fuzz test this to try lot's of different arguments
+        for k, v in want_metrics.items():
+            self.assertAlmostEqual(metrics[k], v)
+    
+    def getCommonTestMessages(self):
         messages = [
             wagglemsg.Message(
                 name="test",
@@ -135,9 +177,12 @@ class TestService(unittest.TestCase):
                 },
             ),
         ]
-
-        # randomize order of messages
         shuffle(messages)
+        return messages
+
+    def getPublishTestCases(self):
+        # TODO(sean) should we fuzz test this to try lot's of different arguments
+        messages = self.getCommonTestMessages()
 
         app_uid = str(uuid4())
         app_meta = {
@@ -158,54 +203,89 @@ class TestService(unittest.TestCase):
                 # NOTE(sean) the order of meta is important. we should expect:
                 # 1. sys meta overrides msg meta and app meta
                 # 2. app meta overrides msg meta
-                meta={**msg.meta, **app_meta, **self.sys_meta})
+                meta={**msg.meta, **app_meta, **self.service.system_meta})
             for msg in messages
         ]
 
         return app_uid, messages, want_messages
+
+    def getSystemPublishTestCases(self):
+        messages = self.getCommonTestMessages()
+
+        # we expect the same messages, but for system publishers we only want sys meta tagged
+        want_messages = [
+            wagglemsg.Message(
+                name=msg.name,
+                value=msg.value,
+                timestamp=msg.timestamp,
+                # NOTE(sean) the order of meta is important. we should expect:
+                # 1. sys meta overrides msg meta
+                meta={**msg.meta, **self.service.system_meta})
+            for msg in messages
+        ]
+
+        return messages, want_messages
 
     def publishMessages(self, app_uid, messages, scope):
         with get_plugin(app_uid) as plugin:
             for msg in messages:
                 plugin.publish(msg.name, msg.value, timestamp=msg.timestamp, meta=msg.meta, scope=scope)
 
-    def test_publish_beehive(self):
+    def publishSystemMessages(self, messages, scope, username):
+        with ExitStack() as es:
+            # TODO(sean) try to consolidate this with existing testing scaffolding
+            conn = es.enter_context(pika.BlockingConnection(pika.ConnectionParameters(
+                host=RABBITMQ_HOST,
+                port=RABBITMQ_PORT,
+                credentials=pika.PlainCredentials(
+                    username=username,
+                    # we're assuming password = username for test purposes
+                    password=username,
+                )
+            )))
+            ch = es.enter_context(conn.channel())
+
+            for msg in messages:
+                properties = pika.BasicProperties(user_id=username)
+                ch.basic_publish("to-validator", scope, wagglemsg.dump(msg), properties=properties)
+
+    def testPublishBeehive(self):
         app_uid, messages, want_messages = self.getPublishTestCases()
         self.publishMessages(app_uid, messages, scope="beehive")
         self.assertMessages("to-beehive", want_messages)
-        self.assertMetricsChanged({
+        self.assertMetrics({
             "wes_data_service_messages_total": len(want_messages),
             "wes_data_service_messages_rejected_total": 0,
             "wes_data_service_messages_published_node_total": 0,
             "wes_data_service_messages_published_beehive_total": len(want_messages),
         })
     
-    def test_publish_node(self):
+    def testPublishNode(self):
         app_uid, messages, want_messages = self.getPublishTestCases()
         subscriber = self.getSubscriber("#")
         self.publishMessages(app_uid, messages, scope="node")
         self.assertSubscriberMessages(subscriber, want_messages)
-        self.assertMetricsChanged({
+        self.assertMetrics({
             "wes_data_service_messages_total": len(want_messages),
             "wes_data_service_messages_rejected_total": 0,
             "wes_data_service_messages_published_node_total": len(want_messages),
             "wes_data_service_messages_published_beehive_total": 0,
         })
 
-    def test_publish_all(self):
+    def testPublishAll(self):
         app_uid, messages, want_messages = self.getPublishTestCases()
         subscriber = self.getSubscriber("#")
         self.publishMessages(app_uid, messages, scope="all")
         self.assertSubscriberMessages(subscriber, want_messages)
         self.assertMessages("to-beehive", want_messages)
-        self.assertMetricsChanged({
+        self.assertMetrics({
             "wes_data_service_messages_total": len(want_messages),
             "wes_data_service_messages_rejected_total": 0,
             "wes_data_service_messages_published_node_total": len(want_messages),
             "wes_data_service_messages_published_beehive_total": len(want_messages),
         })
 
-    def test_subscribe_topic(self):
+    def testSubscribeTopic(self):
         app_uid, messages, want_messages = self.getPublishTestCases()
 
         subscriber1 = self.getSubscriber("test")
@@ -216,40 +296,40 @@ class TestService(unittest.TestCase):
         self.assertSubscriberMessages(subscriber1, [msg for msg in want_messages if msg.name == "test"])
         self.assertSubscriberMessages(subscriber2, [msg for msg in want_messages if msg.name == "e"])
 
-        self.assertMetricsChanged({
+        self.assertMetrics({
             "wes_data_service_messages_total": len(want_messages),
             "wes_data_service_messages_rejected_total": 0,
             "wes_data_service_messages_published_node_total": len(want_messages),
             "wes_data_service_messages_published_beehive_total": len(want_messages),
         })
 
-    def test_bad_message_body(self):
+    def testBadMessageBody(self):
         app_uid = str(uuid4())
         self.channel.basic_publish("to-validator", "all", b"{bad data", properties=pika.BasicProperties(app_id=app_uid))
         
         time.sleep(0.1)
 
-        self.assertMetricsChanged({
+        self.assertMetrics({
             "wes_data_service_messages_total": 1,
             "wes_data_service_messages_rejected_total": 1,
             "wes_data_service_messages_published_node_total": 0,
             "wes_data_service_messages_published_beehive_total": 0,
         })
 
-    def test_no_app_uid(self):
+    def testNoAppUID(self):
         with get_plugin("") as plugin:
             plugin.publish("test", 123)
 
         time.sleep(0.1)
 
-        self.assertMetricsChanged({
+        self.assertMetrics({
             "wes_data_service_messages_total": 1,
             "wes_data_service_messages_rejected_total": 1,
             "wes_data_service_messages_published_node_total": 0,
             "wes_data_service_messages_published_beehive_total": 0,
         })
 
-    def test_no_app_meta(self):
+    def testNoAppMeta(self):
         app_uid = str(uuid4())
 
         with get_plugin(app_uid) as plugin:
@@ -257,14 +337,38 @@ class TestService(unittest.TestCase):
 
         time.sleep(0.1)
 
-        self.assertMetricsChanged({
+        self.assertMetrics({
             "wes_data_service_messages_total": 1,
             "wes_data_service_messages_rejected_total": 1,
             "wes_data_service_messages_published_node_total": 0,
             "wes_data_service_messages_published_beehive_total": 0,
         })
-    
-    def test_publish_upload(self):
+
+    def testSystemServicePublish(self):
+        messages, want_messages = self.getSystemPublishTestCases()
+        subscriber = self.getSubscriber("#")
+        self.publishSystemMessages(messages, scope="all", username="service")
+        self.assertSubscriberMessages(subscriber, want_messages)
+        self.assertMessages("to-beehive", want_messages)
+        self.assertMetrics({
+            "wes_data_service_messages_total": len(want_messages),
+            "wes_data_service_messages_rejected_total": 0,
+            "wes_data_service_messages_published_node_total": len(want_messages),
+            "wes_data_service_messages_published_beehive_total": len(want_messages),
+        })
+
+    def testSystemServicePublishBadUser(self):
+        messages, _ = self.getSystemPublishTestCases()
+        self.publishSystemMessages(messages, "all", username="plugin")
+        time.sleep(0.1)
+        self.assertMetrics({
+            "wes_data_service_messages_total": len(messages),
+            "wes_data_service_messages_rejected_total": len(messages),
+            "wes_data_service_messages_published_node_total": 0,
+            "wes_data_service_messages_published_beehive_total": 0,
+        })
+
+    def testPublishUpload(self):
         # TODO(sean) clean up! added as a regression test for now.
         app_uid = str(uuid4())
 
@@ -290,7 +394,7 @@ class TestService(unittest.TestCase):
 
         job = app_meta["job"]
         task = app_meta["task"]
-        node = self.sys_meta["node"]
+        node = self.service.system_meta["node"]
 
         self.assertMessages("to-beehive", [wagglemsg.Message(
             name="upload",
@@ -300,11 +404,11 @@ class TestService(unittest.TestCase):
                 "user": "data",
                 "filename": "hello.txt",
                 **app_meta,
-                **self.sys_meta,
+                **self.service.system_meta,
             }
         )])
 
-        self.assertMetricsChanged({
+        self.assertMetrics({
             "wes_data_service_messages_total": 1,
             "wes_data_service_messages_rejected_total": 0,
             "wes_data_service_messages_published_node_total": 1,
