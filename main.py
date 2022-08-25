@@ -298,7 +298,7 @@ def main():
     )
     parser.add_argument(
         "--dst-exchange-beehive",
-        default=getenv("DST_QUEUE_BEEHIVE", "to-beehive"),
+        default=getenv("DST_EXCHANGE_BEEHIVE", "to-beehive"),
         help="destination exchange for beehive",
     )
     parser.add_argument(
