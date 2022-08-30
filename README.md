@@ -20,7 +20,7 @@ User App Data Path
                     1. sets app meta cache:
                        app uid -> app meta
 
-              (app) ------------------> [app meta cache]
+            (user app) ------------------> [app meta cache]
                 |                                |
                 | 2. publish to                  |
                 |    to-validator                |
