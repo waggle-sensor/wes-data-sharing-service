@@ -25,9 +25,9 @@ User App Data Path
                 | 2. publish to                  |
                 |    to-validator                |
                 |    with app uid                | 3. tag app message meta using app uid and sys meta
-                |                                |
+                v                                |
   to-validator  +-> [|||||] ----------> [data sharing service] ---> 4. publish to local / beehive
-  queue         |
+  queue         ^
                 | 1. publish to               2. tag sys message with sys meta
                 |    to-validator
                 |    with user id
