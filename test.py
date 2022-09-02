@@ -369,18 +369,38 @@ class TestService(unittest.TestCase):
         })
 
     def testPublishUpload(self):
-        # TODO(sean) clean up! added as a regression test for now.
-        app_uid = str(uuid4())
-
         tag = randtag()
-
-        app_meta = {
+        self.assertUploadWorks(tag, app_meta={
             "job": f"sage-{randint(1, 1000000)}",
             "task": f"testing-{randint(1, 1000000)}",
             "host": f"{randint(1, 1000000)}.ws-nxcore",
             "plugin": f"plugin-test:{tag}",
             "vsn": "should be replaced",
-        }
+        })
+
+    def testPublishUploadWithNamespace(self):
+        tag = randtag()
+        self.assertUploadWorks(tag, app_meta={
+            "job": f"sage-{randint(1, 1000000)}",
+            "task": f"testing-{randint(1, 1000000)}",
+            "host": f"{randint(1, 1000000)}.ws-nxcore",
+            "plugin": f"waggle-sensor/plugin-test:{tag}",
+            "vsn": "should be replaced",
+        })
+
+    def testPublishUploadWithRegistryAndNamespace(self):
+        tag = randtag()
+        self.assertUploadWorks(tag, app_meta={
+            "job": f"sage-{randint(1, 1000000)}",
+            "task": f"testing-{randint(1, 1000000)}",
+            "host": f"{randint(1, 1000000)}.ws-nxcore",
+            "plugin": f"docker.io/waggle-sensor/plugin-test:{tag}",
+            "vsn": "should be replaced",
+        })
+
+    def assertUploadWorks(self, tag, app_meta):
+        # TODO(sean) clean up! added as a regression test for now.
+        app_uid = str(uuid4())
         self.updateAppMetaCache(app_uid, app_meta)
 
         timestamp = time.time_ns()
