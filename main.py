@@ -214,9 +214,19 @@ def upload_url_for_message(msg: wagglemsg.Message) -> str:
         filename = msg.meta["filename"]
         plugin = msg.meta["plugin"]
         namespace = "sage"
-        tag = plugin.split(":")[-1]
     except KeyError as exc:
         raise InvalidMessageError(f"message missing fields for upload url: {exc}")
+
+    plugin_name = plugin.split("/")[-1]
+    plugin_name_parts = plugin_name.split(":")
+
+    if len(plugin_name_parts) == 1:
+        tag = "latest"
+    elif len(plugin_name_parts) == 2:
+        tag = plugin_name_parts[-1]
+    else:
+        raise InvalidMessageError(f"invalid plugin image name: {plugin!r}")
+
     return f"https://storage.sagecontinuum.org/api/v1/data/{job}/{namespace}-{task}-{tag}/{node}/{msg.timestamp}-{filename}"
 
 

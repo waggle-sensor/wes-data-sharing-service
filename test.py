@@ -388,13 +388,53 @@ class TestService(unittest.TestCase):
             "vsn": "should be replaced",
         })
 
-    def testPublishUploadWithRegistryAndNamespace(self):
+    def testPublishUploadWithRegistry(self):
         tag = randtag()
         self.assertUploadWorks(tag, app_meta={
             "job": f"sage-{randint(1, 1000000)}",
             "task": f"testing-{randint(1, 1000000)}",
             "host": f"{randint(1, 1000000)}.ws-nxcore",
             "plugin": f"docker.io/waggle-sensor/plugin-test:{tag}",
+            "vsn": "should be replaced",
+        })
+
+    def testPublishUploadWithRegistryWithColon(self):
+        tag = randtag()
+        self.assertUploadWorks(tag, app_meta={
+            "job": f"sage-{randint(1, 1000000)}",
+            "task": f"testing-{randint(1, 1000000)}",
+            "host": f"{randint(1, 1000000)}.ws-nxcore",
+            "plugin": f"localhost:5000/waggle-sensor/plugin-test:{tag}",
+            "vsn": "should be replaced",
+        })
+
+    def testPublishUploadWithImplicitLatest(self):
+        tag = "latest"
+        self.assertUploadWorks(tag, app_meta={
+            "job": f"sage-{randint(1, 1000000)}",
+            "task": f"testing-{randint(1, 1000000)}",
+            "host": f"{randint(1, 1000000)}.ws-nxcore",
+            "plugin": "plugin-test",
+            "vsn": "should be replaced",
+        })
+
+    def testPublishUploadWithNamespaceAndImplicitLatest(self):
+        tag = "latest"
+        self.assertUploadWorks(tag, app_meta={
+            "job": f"sage-{randint(1, 1000000)}",
+            "task": f"testing-{randint(1, 1000000)}",
+            "host": f"{randint(1, 1000000)}.ws-nxcore",
+            "plugin": "waggle-sensor/plugin-test",
+            "vsn": "should be replaced",
+        })
+
+    def testPublishUploadWithRegistryWithColonAndImplicitLatest(self):
+        tag = "latest"
+        self.assertUploadWorks(tag, app_meta={
+            "job": f"sage-{randint(1, 1000000)}",
+            "task": f"testing-{randint(1, 1000000)}",
+            "host": f"{randint(1, 1000000)}.ws-nxcore",
+            "plugin": "localhost:5000/waggle-sensor/plugin-test",
             "vsn": "should be replaced",
         })
 
