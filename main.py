@@ -208,7 +208,7 @@ def convert_to_upload_message(msg: wagglemsg.Message, upload_publish_name: str) 
 
 def upload_url_for_message(msg: wagglemsg.Message) -> str:
     try:
-        job = msg.meta["job"]
+        job = msg.meta.get("job") or "sage"
         task = msg.meta["task"]
         node = msg.meta["node"]
         filename = msg.meta["filename"]

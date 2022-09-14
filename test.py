@@ -438,7 +438,17 @@ class TestService(unittest.TestCase):
             "vsn": "should be replaced",
         })
 
-    def assertUploadWorks(self, tag, app_meta):
+    def testPublishWithDefaultSageNamespace(self):
+        tag = "1.2.3"
+        self.assertUploadWorks(tag, app_meta={
+            "job": "",
+            "task": "testing",
+            "host": "ws-nxcore",
+            "plugin": "localhost:5000/waggle-sensor/plugin-test:1.2.3",
+            "vsn": "should be replaced",
+        }, override_job="sage")
+
+    def assertUploadWorks(self, tag, app_meta, override_job=None):
         # TODO(sean) clean up! added as a regression test for now.
         app_uid = str(uuid4())
         self.updateAppMetaCache(app_uid, app_meta)
@@ -452,7 +462,7 @@ class TestService(unittest.TestCase):
             with get_plugin(app_uid) as plugin:
                 plugin.upload_file(file, meta={"user": "data"}, timestamp=timestamp)
 
-        job = app_meta["job"]
+        job = override_job or app_meta["job"]
         task = app_meta["task"]
         node = self.service.system_meta["node"]
 
