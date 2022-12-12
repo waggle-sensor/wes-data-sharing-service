@@ -236,7 +236,7 @@ def declare_exchange_with_queue(ch: pika.adapters.blocking_connection.BlockingCh
     ch.queue_bind(name, name)
 
 
-def main():
+def main():  # pragma: no cover
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--debug",
