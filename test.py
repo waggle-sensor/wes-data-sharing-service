@@ -29,6 +29,8 @@ APP_META_CACHE_PORT = int(os.environ.get("APP_META_CACHE_PORT", "6379"))
 DATA_SHARING_SERVICE_HOST = os.environ.get("DATA_SHARING_SERVICE_HOST", "127.0.0.1")
 DATA_SHARING_SERVICE_METRICS_PORT = int(os.environ.get("DATA_SHARING_SERVICE_METRICS_PORT", "8080"))
 
+# TODO(sean) simplify test suite, especially around uploads. should be mostly dumb and straight forward.
+
 
 def get_plugin(app_id):
     return Plugin(PluginConfig(
@@ -249,6 +251,27 @@ class TestService(unittest.TestCase):
                 properties = pika.BasicProperties(user_id=username)
                 ch.basic_publish("to-validator", scope, wagglemsg.dump(msg), properties=properties)
 
+    def publishWaggleMessages(self, messages, scope, user_id=None, uid=None):
+        self.publishRawMessages([wagglemsg.dump(msg) for msg in messages], scope=scope, user_id=user_id, uid=uid)
+
+    def publishRawMessages(self, messages, scope, user_id=None, uid=None):
+        with ExitStack() as es:
+            # TODO(sean) try to consolidate this with existing testing scaffolding
+            conn = es.enter_context(pika.BlockingConnection(pika.ConnectionParameters(
+                host=RABBITMQ_HOST,
+                port=RABBITMQ_PORT,
+                credentials=pika.PlainCredentials(
+                    username=user_id or "admin",
+                    # we're assuming password = username for test purposes
+                    password=user_id or "admin",
+                )
+            )))
+            ch = es.enter_context(conn.channel())
+
+            for msg in messages:
+                properties = pika.BasicProperties(user_id=user_id, app_id=uid)
+                ch.basic_publish("to-validator", scope, msg, properties=properties)
+
     def testPublishBeehive(self):
         app_uid, messages, want_messages = self.getPublishTestCases()
         self.publishMessages(app_uid, messages, scope="beehive")
@@ -316,7 +339,24 @@ class TestService(unittest.TestCase):
             "wes_data_service_messages_published_beehive_total": 0,
         })
 
-    def testNoAppUID(self):
+    def testNoAppUIDOrUserID(self):
+        messages = [
+            wagglemsg.Message(timestamp=1234234234, value=123, name="testing", meta={}),
+            wagglemsg.Message(timestamp=1234234234, value=123, name="testing", meta={"key": "val"}),
+        ]
+
+        self.publishWaggleMessages(messages, scope="all")
+
+        time.sleep(0.1)
+
+        self.assertMetrics({
+            "wes_data_service_messages_total": len(messages),
+            "wes_data_service_messages_rejected_total": len(messages),
+            "wes_data_service_messages_published_node_total": 0,
+            "wes_data_service_messages_published_beehive_total": 0,
+        })
+
+    def testBlankAppUID(self):
         with get_plugin("") as plugin:
             plugin.publish("test", 123)
 
@@ -340,6 +380,56 @@ class TestService(unittest.TestCase):
         self.assertMetrics({
             "wes_data_service_messages_total": 1,
             "wes_data_service_messages_rejected_total": 1,
+            "wes_data_service_messages_published_node_total": 0,
+            "wes_data_service_messages_published_beehive_total": 0,
+        })
+
+    def testInvalidBody(self):
+        messages = [
+            b"",
+            b"{",
+            b'{"meta":null}'
+            b'{"ts":0,"val":123,"meta":null}',
+        ]
+
+        app_uid = str(uuid4())
+        self.publishRawMessages(messages, scope="all", user_id="plugin", uid=app_uid)
+
+        time.sleep(0.1)
+
+        self.assertMetrics({
+            "wes_data_service_messages_total": len(messages),
+            "wes_data_service_messages_rejected_total": len(messages),
+            "wes_data_service_messages_published_node_total": 0,
+            "wes_data_service_messages_published_beehive_total": 0,
+        })
+
+    def testInvalidUploadMessage(self):
+        app_uid = str(uuid4())
+        self.updateAppMetaCache(app_uid, {
+            "vsn": "W123",
+            "job": "sage",
+            "task": "wow",
+            "node": "1111222233334444",
+        })
+
+        messages = [
+            wagglemsg.Message(timestamp=1234234234, value=123, name="upload", meta={
+                "plugin": "awesome/app:13.2",
+            }),
+            wagglemsg.Message(timestamp=1234234234, value=123, name="upload", meta={
+                "filename": "hello.txt",
+                "plugin": "invalid/tags/here:23:13",
+            }),
+        ]
+
+        self.publishWaggleMessages(messages, scope="all", user_id="plugin", uid=app_uid)
+
+        time.sleep(0.1)
+
+        self.assertMetrics({
+            "wes_data_service_messages_total": len(messages),
+            "wes_data_service_messages_rejected_total": len(messages),
             "wes_data_service_messages_published_node_total": 0,
             "wes_data_service_messages_published_beehive_total": 0,
         })

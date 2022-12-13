@@ -372,7 +372,7 @@ def main():  # pragma: no cover
     service.run()
 
 
-if __name__ == "__main__":
+if __name__ == "__main__": # pragma: no cover
     try:
         main()
     except KeyboardInterrupt:
