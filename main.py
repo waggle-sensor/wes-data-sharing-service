@@ -130,6 +130,7 @@ class Service:
             es.callback(metrics_server.shutdown)
 
             self.logger.info("starting consumer on %s.", self.src_queue)
+            self.channel.basic_qos(prefetch_count=1000)
             self.channel.basic_consume(self.src_queue, self.on_message_callback, auto_ack=False)
             self.channel.start_consuming()
 
@@ -342,9 +343,11 @@ def main():  # pragma: no cover
                 username=args.rabbitmq_username,
                 password=args.rabbitmq_password,
             ),
-            client_properties={"name": "wes-data-sharing-service"},
             connection_attempts=3,
             retry_delay=10,
+            client_properties={
+                "connection_name": "wes-data-sharing-service",
+            },
         ),
         src_queue=args.src_queue,
         dst_exchange_beehive=args.dst_exchange_beehive,
