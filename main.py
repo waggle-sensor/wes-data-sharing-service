@@ -2,6 +2,7 @@ import argparse
 import logging
 import json
 import pika
+from pika.exceptions import StreamLostError, ConnectionBlockedTimeout
 import prometheus_client
 import threading
 import wagglemsg
@@ -100,6 +101,15 @@ class Service:
         self.stopped.wait()
 
     def run(self):
+        while True:
+            try:
+                self._connect_and_process()
+            except StreamLostError:
+                self.logger.info("Connection reset by peer. Will reconnect...")
+            except ConnectionBlockedTimeout:
+                self.logger.info("Connection blocked timeout. Will reconnect...")
+
+    def _connect_and_process(self):
         with ExitStack() as es:
             self.stopped.clear()
             es.callback(self.stopped.set)
@@ -343,8 +353,9 @@ def main():  # pragma: no cover
                 username=args.rabbitmq_username,
                 password=args.rabbitmq_password,
             ),
-            connection_attempts=3,
-            retry_delay=10,
+            connection_attempts=10,
+            retry_delay=3,
+            heartbeat=10,
             client_properties={
                 "connection_name": "wes-data-sharing-service",
             },
