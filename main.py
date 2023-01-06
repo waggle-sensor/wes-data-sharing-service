@@ -105,9 +105,9 @@ class Service:
             try:
                 self._connect_and_process()
             except StreamLostError:
-                self.logger.info("Connection reset by peer. Will reconnect...")
+                self.logger.info("connection reset by peer. will reconnect...")
             except ConnectionBlockedTimeout:
-                self.logger.info("Connection blocked timeout. Will reconnect...")
+                self.logger.info("timed out blocked connection. will reconnect...")
 
     def _connect_and_process(self):
         with ExitStack() as es:
