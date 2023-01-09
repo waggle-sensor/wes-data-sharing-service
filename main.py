@@ -2,6 +2,7 @@ import argparse
 import logging
 import json
 import pika
+from pika.exceptions import StreamLostError, ConnectionBlockedTimeout, AMQPHeartbeatTimeout
 import prometheus_client
 import threading
 import wagglemsg
@@ -100,6 +101,17 @@ class Service:
         self.stopped.wait()
 
     def run(self):
+        while True:
+            try:
+                self._connect_and_process()
+            except AMQPHeartbeatTimeout:
+                self.logger.info("connection heartbeat timeout. will reconnect...")
+            except StreamLostError:
+                self.logger.info("connection reset by peer. will reconnect...")
+            except ConnectionBlockedTimeout:
+                self.logger.info("connection blocked for too long. will reconnect...")
+
+    def _connect_and_process(self):
         with ExitStack() as es:
             self.stopped.clear()
             es.callback(self.stopped.set)
@@ -130,6 +142,7 @@ class Service:
             es.callback(metrics_server.shutdown)
 
             self.logger.info("starting consumer on %s.", self.src_queue)
+            self.channel.basic_qos(prefetch_count=1000)
             self.channel.basic_consume(self.src_queue, self.on_message_callback, auto_ack=False)
             self.channel.start_consuming()
 
@@ -342,9 +355,13 @@ def main():  # pragma: no cover
                 username=args.rabbitmq_username,
                 password=args.rabbitmq_password,
             ),
-            client_properties={"name": "wes-data-sharing-service"},
-            connection_attempts=3,
-            retry_delay=10,
+            connection_attempts=10,
+            retry_delay=3,
+            heartbeat=10,
+            blocked_connection_timeout=30,
+            client_properties={
+                "connection_name": "wes-data-sharing-service",
+            },
         ),
         src_queue=args.src_queue,
         dst_exchange_beehive=args.dst_exchange_beehive,
