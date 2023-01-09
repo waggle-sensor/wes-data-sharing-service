@@ -2,7 +2,7 @@ import argparse
 import logging
 import json
 import pika
-from pika.exceptions import StreamLostError, ConnectionBlockedTimeout
+from pika.exceptions import StreamLostError, ConnectionBlockedTimeout, AMQPHeartbeatTimeout
 import prometheus_client
 import threading
 import wagglemsg
@@ -104,6 +104,8 @@ class Service:
         while True:
             try:
                 self._connect_and_process()
+            except AMQPHeartbeatTimeout:
+                self.logger.info("connection heartbeat timeout. will reconnect...")
             except StreamLostError:
                 self.logger.info("connection reset by peer. will reconnect...")
             except ConnectionBlockedTimeout:
