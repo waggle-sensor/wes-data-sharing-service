@@ -358,6 +358,7 @@ def main():  # pragma: no cover
             connection_attempts=10,
             retry_delay=3,
             heartbeat=10,
+            blocked_connection_timeout=30,
             client_properties={
                 "connection_name": "wes-data-sharing-service",
             },
